@@ -250,12 +250,9 @@ class SPADEUNetGenerator(nn.Module):
 
         # AdaIN tissue conditioning: inject global tissue context from CLS token
         if cls_token is not None:
-            mean = x.mean(dim=[2, 3], keepdim=True)        # [B, 512, 1, 1]
-            std  = x.std(dim=[2, 3],  keepdim=True) + 1e-5
-            x = (x - mean) / std
             gamma = self.adain_gamma(cls_token).unsqueeze(-1).unsqueeze(-1)  # [B, 512, 1, 1]
-            beta  = self.adain_beta(cls_token).unsqueeze(-1).unsqueeze(-1)   # [B, 512, 1, 1]
-            x = x * (1 + gamma) + beta  # +1: identity at init (gamma/beta start at zero)
+            beta  = self.adain_beta(cls_token).unsqueeze(-1).unsqueeze(-1)   #[B, 512, 1, 1]
+            x = x * (1 + gamma) + beta  # +1 ensures exact identity at init
 
         # D5: upsample 16→32, skip from e4 + edge@32, UNI at 32
         x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
