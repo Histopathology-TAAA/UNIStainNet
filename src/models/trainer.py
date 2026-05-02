@@ -240,14 +240,29 @@ class UNIStainNetTrainer(pl.LightningModule):
             del state_dict[k]
 
     def _load_uni_model(self):
-        """Lazily load UNI ViT-L/16 for on-the-fly feature extraction."""
+        """Lazily load UNI-2 for on-the-fly feature extraction."""
         if self._uni_model is None:
             import timm
+            # UNI-2 specific configuration
+            timm_kwargs = {
+                'img_size': 224,
+                'patch_size': 14,
+                'depth': 24,
+                'num_heads': 24,
+                'init_values': 1e-5,
+                'embed_dim': 1536,
+                'mlp_ratio': 2.66667*2,
+                'num_classes': 0,
+                'no_embed_class': True,
+                'mlp_layer': timm.layers.SwiGLUPacked,
+                'act_layer': torch.nn.SiLU,
+                'reg_tokens': 8,
+                'dynamic_img_size': True
+            }
             self._uni_model = timm.create_model(
-                "hf-hub:MahmoodLab/uni2-h",
-                pretrained=True,
-                init_values=1e-5,
-                dynamic_img_size=True,
+                "hf-hub:MahmoodLab/UNI2-h", 
+                pretrained=True, 
+                **timm_kwargs
             )
             self._uni_model.eval()
             self._uni_model.requires_grad_(False)
@@ -258,46 +273,42 @@ class UNIStainNetTrainer(pl.LightningModule):
 
     @torch.no_grad()
     def _extract_uni_from_sub_crops(self, uni_sub_crops):
-        """Extract UNI features from pre-prepared sub-crops on GPU.
-
-        Args:
-            uni_sub_crops: [B, 16, 3, 224, 224] — batch of 4x4 sub-crop grids,
-                           already normalized with ImageNet stats.
-
-        Returns:
-            uni_features: [B, S*S, feat_dim] where S = uni_spatial_pool_size (default 32)
-            cls_token:    [B, feat_dim] global tissue summary (averaged over 16 sub-crops)
-        """
         uni_model = self._load_uni_model()
         B = uni_sub_crops.shape[0]
         spatial_size = self.hparams.uni_spatial_pool_size
         num_crops = 4  # 4x4 grid
-        patches_per_side = 14  # 224/16
+        
+        # DYNAMIC PATCH CALCULATION 
+        patch_size = uni_model.patch_embed.patch_size[0] # 14 for UNI-2, 16 for UNI-1
+        patches_per_side = 224 // patch_size 
 
-        # Batched UNI forward: [B, 16, 3, 224, 224] -> [B*16, 3, 224, 224]
+        # Batched UNI forward
         all_crops = uni_sub_crops.reshape(B * 16, 3, 224, 224).to(self.device)
-        all_feats = uni_model.forward_features(all_crops)  # [B*16, 197, feat_dim]
-        patch_tokens = all_feats[:, 1:, :]  # [B*16, 196, feat_dim]
+        all_feats = uni_model.forward_features(all_crops)  
+        
+        # Extact Patches (skip CLS and the 8 Register tokens)
+        num_patches = patches_per_side ** 2
+        patch_tokens = all_feats[:, -num_patches:, :] 
         feat_dim = patch_tokens.shape[-1]
 
-        # CLS token: global tissue summary — average over 16 sub-crops → [B, feat_dim]
+        # Extract CLS token
         cls_token = all_feats[:, 0, :].reshape(B, 16, feat_dim).mean(dim=1)
 
-        # Reshape back to per-sample grids: [B, 4, 4, 14, 14, 1024]
+        # Reshape back to per-sample grids
         patch_tokens = patch_tokens.reshape(
             B, num_crops, num_crops,
-            patches_per_side, patches_per_side, 1024
+            patches_per_side, patches_per_side, feat_dim
         )
-        # Interleave to spatial grid: [B, 56, 56, 1024]
-        full_size = num_crops * patches_per_side  # 56
+        # Interleave to spatial grid
+        full_size = num_crops * patches_per_side  
         full_grid = patch_tokens.permute(0, 1, 3, 2, 4, 5)
-        full_grid = full_grid.reshape(B, full_size, full_size, 1536)
+        full_grid = full_grid.reshape(B, full_size, full_size, feat_dim)
 
-        # Pool to target spatial size (batched)
+        # Pool to target spatial size
         if spatial_size < full_size:
-            grid_bchw = full_grid.permute(0, 3, 1, 2)  # [B, 1024, 56, 56]
-            pooled = F.adaptive_avg_pool2d(grid_bchw, spatial_size)  # [B, 1024, S, S]
-            result = pooled.permute(0, 2, 3, 1)  # [B, S, S, 1024]
+            grid_bchw = full_grid.permute(0, 3, 1, 2)  
+            pooled = F.adaptive_avg_pool2d(grid_bchw, spatial_size)  
+            result = pooled.permute(0, 2, 3, 1)  
         else:
             result = full_grid
 
