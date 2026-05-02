@@ -161,7 +161,7 @@ def compute_uni_fid(generated, real):
     import torchvision.transforms as transforms
     from scipy.linalg import sqrtm
 
-    uni_model = timm.create_model("hf-hub:MahmoodLab/uni", pretrained=True,
+    uni_model = timm.create_model("hf-hub:MahmoodLab/uni2-h", pretrained=True,
                                    init_values=1e-5, dynamic_img_size=True)
     uni_model = uni_model.cuda().eval()
 
@@ -401,7 +401,7 @@ def compute_downstream_metrics(generated, real, labels, train_ihc_dir):
 
     # Load UNI model
     print("  Loading UNI model for downstream evaluation...")
-    uni_model = timm.create_model("hf-hub:MahmoodLab/uni", pretrained=True,
+    uni_model = timm.create_model("hf-hub:MahmoodLab/uni2-h", pretrained=True,
                                    init_values=1e-5, dynamic_img_size=True)
     uni_model = uni_model.cuda().eval()
 

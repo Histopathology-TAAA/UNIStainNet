@@ -17,7 +17,7 @@ class UNIFeatureProcessor(nn.Module):
     generator channel dim and upsample to match each decoder layer resolution.
     """
 
-    def __init__(self, uni_dim=1024, base_channels=512):
+    def __init__(self, uni_dim=1536, base_channels=512):
         super().__init__()
         self.base_channels = base_channels
 
@@ -109,7 +109,7 @@ class UNIFeatureProcessorHighRes(nn.Module):
         Also: 32→16 downsample → feat_16 (512ch, for bottleneck)
     """
 
-    def __init__(self, uni_dim=1024, base_channels=512, spatial_size=32,
+    def __init__(self, uni_dim=1536, base_channels=512, spatial_size=32,
                  output_512=False):
         super().__init__()
         self.base_channels = base_channels

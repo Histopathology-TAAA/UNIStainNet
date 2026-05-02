@@ -75,7 +75,7 @@ def _load_models():
 
         print("Loading UNI ViT-L/16 ...")
         uni_model = timm.create_model(
-            "hf-hub:MahmoodLab/uni", pretrained=True,
+            "hf-hub:MahmoodLab/uni2-h", pretrained=True,
             init_values=1e-5, dynamic_img_size=True,
         )
         uni_model = uni_model.cuda().eval()

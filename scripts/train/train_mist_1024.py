@@ -45,7 +45,7 @@ def main():
         num_classes=5,
         null_class=4,
         class_dim=64,
-        uni_dim=1024,
+        uni_dim=1536,
         ndf=64,
         input_skip=True,
         edge_encoder='v2',

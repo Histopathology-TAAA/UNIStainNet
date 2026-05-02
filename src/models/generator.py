@@ -27,7 +27,7 @@ class SPADEUNetGenerator(nn.Module):
     ~30M params.
     """
 
-    def __init__(self, num_classes=5, class_dim=64, uni_dim=1024,
+    def __init__(self, num_classes=5, class_dim=64, uni_dim=1536,
                  input_skip=False, edge_encoder=False, edge_base_ch=32,
                  uni_spatial_size=4, image_size=512, uni_spade_at_512=False):
         super().__init__()

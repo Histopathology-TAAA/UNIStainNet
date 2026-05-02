@@ -49,7 +49,7 @@ class UNIStainNetTrainer(pl.LightningModule):
         num_classes=5,
         null_class=4,
         class_dim=64,
-        uni_dim=1024,
+        uni_dim=1536,
         ndf=64,
         disc_n_layers=3,
         input_skip=False,
@@ -244,7 +244,7 @@ class UNIStainNetTrainer(pl.LightningModule):
         if self._uni_model is None:
             import timm
             self._uni_model = timm.create_model(
-                "hf-hub:MahmoodLab/uni",
+                "hf-hub:MahmoodLab/uni2-h",
                 pretrained=True,
                 init_values=1e-5,
                 dynamic_img_size=True,
@@ -286,7 +286,7 @@ class UNIStainNetTrainer(pl.LightningModule):
         # Interleave to spatial grid: [B, 56, 56, 1024]
         full_size = num_crops * patches_per_side  # 56
         full_grid = patch_tokens.permute(0, 1, 3, 2, 4, 5)
-        full_grid = full_grid.reshape(B, full_size, full_size, 1024)
+        full_grid = full_grid.reshape(B, full_size, full_size, 1536)
 
         # Pool to target spatial size (batched)
         if spatial_size < full_size:
@@ -297,7 +297,7 @@ class UNIStainNetTrainer(pl.LightningModule):
             result = full_grid
 
         S = result.shape[1]
-        return result.reshape(B, S * S, 1024)  # [B, S*S, 1024]
+        return result.reshape(B, S * S, 1536)  # [B, S*S, 1024]
 
     def _apply_cfg_dropout(self, labels, uni_features):
         """Apply classifier-free guidance dropout during training (vectorized)."""

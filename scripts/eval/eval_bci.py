@@ -44,7 +44,7 @@ from src.utils.metrics import (
 
 def load_uni_model():
     """Load UNI ViT-L/16 for on-the-fly feature extraction during eval."""
-    model = timm.create_model("hf-hub:MahmoodLab/uni", pretrained=True,
+    model = timm.create_model("hf-hub:MahmoodLab/uni2-h", pretrained=True,
                                init_values=1e-5, dynamic_img_size=True)
     model = model.cuda().eval()
     return model
