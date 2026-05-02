@@ -116,6 +116,15 @@ class SPADEUNetGenerator(nn.Module):
             ResBlock(512),
         )
 
+        # AdaIN tissue conditioning: CLS token → per-channel scale/shift at bottleneck
+        # Initialized to zero so training starts from identity (no tissue conditioning)
+        self.adain_gamma = nn.Linear(uni_dim, 512)
+        self.adain_beta  = nn.Linear(uni_dim, 512)
+        nn.init.zeros_(self.adain_gamma.weight)
+        nn.init.zeros_(self.adain_gamma.bias)
+        nn.init.zeros_(self.adain_beta.weight)
+        nn.init.zeros_(self.adain_beta.bias)
+
         # Decoder with SPADE conditioning
         # Channel counts: main_skip + edge_skip (if enabled) + upsampled
         # D5: 512 (up) + 512 (skip e4) + edge_ch[32] → 512
@@ -196,12 +205,13 @@ class SPADEUNetGenerator(nn.Module):
         e4 = self.enc4(e3)
         return {1: e1, 2: e2, 3: e3, 4: e4}
 
-    def forward(self, he_images, uni_features, labels):
+    def forward(self, he_images, uni_features, labels, cls_token=None):
         """
         Args:
-            he_images: [B, 3, H, H] in [-1, 1] where H=512 or H=1024
-            uni_features: [B, N, 1024] where N=16 (4x4 CLS) or N=1024 (32x32 patch)
-            labels: [B] int class labels (0-4)
+            he_images:    [B, 3, H, H] in [-1, 1] where H=512 or H=1024
+            uni_features: [B, N, feat_dim] spatial patch tokens
+            labels:       [B] int class labels (0-4)
+            cls_token:    [B, feat_dim] global tissue summary from UNI CLS (optional)
 
         Returns:
             output: [B, 3, H, H] in [-1, 1]
@@ -237,6 +247,15 @@ class SPADEUNetGenerator(nn.Module):
 
         # Bottleneck at 16×16
         x = self.bottleneck(e5)     # [B, 512, 16, 16]
+
+        # AdaIN tissue conditioning: inject global tissue context from CLS token
+        if cls_token is not None:
+            mean = x.mean(dim=[2, 3], keepdim=True)        # [B, 512, 1, 1]
+            std  = x.std(dim=[2, 3],  keepdim=True) + 1e-5
+            x = (x - mean) / std
+            gamma = self.adain_gamma(cls_token).unsqueeze(-1).unsqueeze(-1)  # [B, 512, 1, 1]
+            beta  = self.adain_beta(cls_token).unsqueeze(-1).unsqueeze(-1)   # [B, 512, 1, 1]
+            x = x * (1 + gamma) + beta  # +1: identity at init (gamma/beta start at zero)
 
         # D5: upsample 16→32, skip from e4 + edge@32, UNI at 32
         x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)

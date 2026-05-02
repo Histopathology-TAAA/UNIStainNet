@@ -265,7 +265,8 @@ class UNIStainNetTrainer(pl.LightningModule):
                            already normalized with ImageNet stats.
 
         Returns:
-            uni_features: [B, S*S, 1024] where S = uni_spatial_pool_size (default 32)
+            uni_features: [B, S*S, feat_dim] where S = uni_spatial_pool_size (default 32)
+            cls_token:    [B, feat_dim] global tissue summary (averaged over 16 sub-crops)
         """
         uni_model = self._load_uni_model()
         B = uni_sub_crops.shape[0]
@@ -275,8 +276,12 @@ class UNIStainNetTrainer(pl.LightningModule):
 
         # Batched UNI forward: [B, 16, 3, 224, 224] -> [B*16, 3, 224, 224]
         all_crops = uni_sub_crops.reshape(B * 16, 3, 224, 224).to(self.device)
-        all_feats = uni_model.forward_features(all_crops)  # [B*16, 197, 1024]
-        patch_tokens = all_feats[:, 1:, :]  # [B*16, 196, 1024]
+        all_feats = uni_model.forward_features(all_crops)  # [B*16, 197, feat_dim]
+        patch_tokens = all_feats[:, 1:, :]  # [B*16, 196, feat_dim]
+        feat_dim = patch_tokens.shape[-1]
+
+        # CLS token: global tissue summary — average over 16 sub-crops → [B, feat_dim]
+        cls_token = all_feats[:, 0, :].reshape(B, 16, feat_dim).mean(dim=1)
 
         # Reshape back to per-sample grids: [B, 4, 4, 14, 14, 1024]
         patch_tokens = patch_tokens.reshape(
@@ -297,15 +302,16 @@ class UNIStainNetTrainer(pl.LightningModule):
             result = full_grid
 
         S = result.shape[1]
-        return result.reshape(B, S * S, 1536)  # [B, S*S, 1024]
+        return result.reshape(B, S * S, feat_dim), cls_token
 
-    def _apply_cfg_dropout(self, labels, uni_features):
+    def _apply_cfg_dropout(self, labels, uni_features, cls_token=None):
         """Apply classifier-free guidance dropout during training (vectorized)."""
         B = labels.shape[0]
         device = labels.device
 
         new_labels = labels.clone()
         new_uni = uni_features.clone()
+        new_cls = cls_token.clone() if cls_token is not None else None
 
         r = torch.rand(B, device=device)
         p_both = self.hparams.cfg_drop_both_prob
@@ -318,8 +324,10 @@ class UNIStainNetTrainer(pl.LightningModule):
 
         new_labels[drop_both | drop_class] = self.null_class
         new_uni[drop_both | drop_uni] = 0.0
+        if new_cls is not None:
+            new_cls[drop_both | drop_uni] = 0.0
 
-        return new_labels, new_uni
+        return new_labels, new_uni, new_cls
 
     def compute_dab_intensity_loss(self, generated, target):
         """Top-10% percentile matching for DAB intensity."""
@@ -574,16 +582,18 @@ class UNIStainNetTrainer(pl.LightningModule):
 
         # On-the-fly UNI extraction: dataset returns [B, 16, 3, 224, 224] sub-crops
         if self._uni_extract_on_the_fly:
-            uni = self._extract_uni_from_sub_crops(uni_or_crops)
+            uni, cls_token = self._extract_uni_from_sub_crops(uni_or_crops)
         else:
-            uni = uni_or_crops
+            uni, cls_token = uni_or_crops, None
 
-        # Apply CFG dropout
-        labels_dropped, uni_dropped = self._apply_cfg_dropout(labels, uni)
+        # Apply CFG dropout (also drops cls_token when UNI is dropped)
+        labels_dropped, uni_dropped, cls_dropped = self._apply_cfg_dropout(labels, uni, cls_token)
 
         # Ablation: zero out UNI features
         if self.hparams.disable_uni:
             uni_dropped = torch.zeros_like(uni_dropped)
+            if cls_dropped is not None:
+                cls_dropped = torch.zeros_like(cls_dropped)
 
         # Ablation: force all labels to null class
         if self.hparams.disable_class:
@@ -592,7 +602,7 @@ class UNIStainNetTrainer(pl.LightningModule):
         # ----------------------------------------------------------------
         # Generator step
         # ----------------------------------------------------------------
-        generated = self.generator(he, uni_dropped, labels_dropped)
+        generated = self.generator(he, uni_dropped, labels_dropped, cls_token=cls_dropped)
 
         # LPIPS main: 4x downsample (128 for 512 input, 256 for 1024)
         lpips_main_size = self.hparams.image_size // 4
@@ -873,19 +883,21 @@ class UNIStainNetTrainer(pl.LightningModule):
 
         # On-the-fly UNI extraction
         if self._uni_extract_on_the_fly:
-            uni = self._extract_uni_from_sub_crops(uni_or_crops)
+            uni, cls_token = self._extract_uni_from_sub_crops(uni_or_crops)
         else:
-            uni = uni_or_crops
+            uni, cls_token = uni_or_crops, None
 
         if self.hparams.disable_uni:
             uni = torch.zeros_like(uni)
+            if cls_token is not None:
+                cls_token = torch.zeros_like(cls_token)
 
         if self.hparams.disable_class:
             labels = torch.full_like(labels, self.hparams.null_class)
 
         # Use EMA generator
         with torch.no_grad():
-            generated = self.generator_ema(he, uni, labels)
+            generated = self.generator_ema(he, uni, labels, cls_token=cls_token)
 
         # LPIPS (4x downsample: 128 for 512, 256 for 1024)
         lpips_size = self.hparams.image_size // 4
@@ -960,13 +972,14 @@ class UNIStainNetTrainer(pl.LightningModule):
 
     @torch.no_grad()
     def generate(self, he_images, uni_features, labels,
-                 num_inference_steps=None, guidance_scale=1.0, seed=None):
+                 cls_token=None, num_inference_steps=None, guidance_scale=1.0, seed=None):
         """Generate IHC images from H&E input.
 
         Args:
-            he_images: [B, 3, H, H] where H=512 or H=1024
-            uni_features: [B, N, 1024] where N=16 (4x4 CLS) or N=1024 (32x32 patch)
-            labels: [B] class/stain labels
+            he_images:    [B, 3, H, H] where H=512 or H=1024
+            uni_features: [B, N, feat_dim] spatial patch tokens
+            labels:       [B] class/stain labels
+            cls_token:    [B, feat_dim] global tissue CLS token (optional)
             num_inference_steps: ignored (single forward pass)
             guidance_scale: CFG scale (1.0 = no guidance)
             seed: random seed (for reproducibility, though model is deterministic)
@@ -977,13 +990,13 @@ class UNIStainNetTrainer(pl.LightningModule):
         gen = self.generator_ema if hasattr(self, 'generator_ema') else self.generator
 
         if guidance_scale <= 1.0:
-            return gen(he_images, uni_features, labels)
+            return gen(he_images, uni_features, labels, cls_token=cls_token)
 
         # Classifier-free guidance
         null_labels = torch.full_like(labels, self.null_class)
 
-        output_cond = gen(he_images, uni_features, labels)
-        output_uncond = gen(he_images, uni_features, null_labels)
+        output_cond   = gen(he_images, uni_features, labels,      cls_token=cls_token)
+        output_uncond = gen(he_images, uni_features, null_labels,  cls_token=None)
 
         output = output_uncond + guidance_scale * (output_cond - output_uncond)
         return output.clamp(-1, 1)

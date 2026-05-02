@@ -78,12 +78,14 @@ def extract_features_for_crop(uni_model, he_crop_01, spatial_pool_size=32):
     with torch.no_grad():
         all_feats = uni_model.forward_features(all_crops)
         patch_tokens = all_feats[:, 1:, :]
+        feat_dim = patch_tokens.shape[-1]
+        cls_token = all_feats[:, 0, :].reshape(B, 16, feat_dim).mean(dim=1).cpu()
 
     patch_tokens = patch_tokens.reshape(
-        B, num_crops, num_crops, patches_per_side, patches_per_side, 1024
+        B, num_crops, num_crops, patches_per_side, patches_per_side, feat_dim
     )
     full_size = num_crops * patches_per_side
-    full_grid = patch_tokens.permute(0, 1, 3, 2, 4, 5).reshape(B, full_size, full_size, 1024)
+    full_grid = patch_tokens.permute(0, 1, 3, 2, 4, 5).reshape(B, full_size, full_size, feat_dim)
 
     if spatial_pool_size < full_size:
         grid_bchw = full_grid.permute(0, 3, 1, 2)
@@ -93,7 +95,7 @@ def extract_features_for_crop(uni_model, he_crop_01, spatial_pool_size=32):
         result = full_grid
 
     S = result.shape[1]
-    return result.reshape(B, S * S, 1024).cpu()
+    return result.reshape(B, S * S, feat_dim).cpu(), cls_token
 
 
 @torch.no_grad()
@@ -109,12 +111,15 @@ def generate_for_stain(model, uni_model, dataloader, stain_label, guidance_scale
         # Override labels with stain label
         stain_labels = torch.full((he.size(0),), stain_label, device='cuda', dtype=torch.long)
 
-        # Extract UNI features
+        # Extract UNI features and CLS token
         he_01 = ((he + 1) / 2).clamp(0, 1)
-        uni = extract_features_for_crop(uni_model, he_01,
-                                        spatial_pool_size=spatial_pool_size).cuda()
+        uni, cls_token = extract_features_for_crop(uni_model, he_01,
+                                                   spatial_pool_size=spatial_pool_size)
+        uni = uni.cuda()
+        cls_token = cls_token.cuda()
 
         gen = model.generate(he, uni, stain_labels,
+                             cls_token=cls_token,
                              guidance_scale=guidance_scale,
                              seed=seed + batch_idx)
 
