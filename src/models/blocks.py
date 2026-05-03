@@ -4,6 +4,7 @@ Building blocks for UNIStainNet generator.
 - SPADEBlock: SPADE + FiLM normalization (UNI spatial + class channel modulation)
 - ResBlock: Residual block with InstanceNorm
 - SelfAttention: Self-attention for global context at bottleneck
+- CrossAttention: Cross-attention with Q from spatial features and K/V from UNI tokens
 """
 
 import torch
@@ -107,3 +108,51 @@ class SelfAttention(nn.Module):
         attn = attn.softmax(dim=-1)
         out = (v @ attn.transpose(-1, -2)).reshape(B, C, H, W)
         return x + self.proj(out)
+
+
+class CrossAttention(nn.Module):
+    """Cross-attention: Q from spatial features, K/V from UNI tokens."""
+
+    def __init__(self, channels, uni_dim=1024, heads=4):
+        super().__init__()
+        if channels % heads != 0:
+            raise ValueError(f"channels ({channels}) must be divisible by heads ({heads})")
+
+        self.heads = heads
+        self.head_dim = channels // heads
+        self.scale = self.head_dim ** -0.5
+
+        self.norm = nn.GroupNorm(32, channels)
+        self.token_norm = nn.LayerNorm(uni_dim)
+
+        self.q_proj = nn.Conv2d(channels, channels, 1)
+        self.k_proj = nn.Linear(uni_dim, channels)
+        self.v_proj = nn.Linear(uni_dim, channels)
+        self.out_proj = nn.Conv2d(channels, channels, 1)
+
+    def forward(self, x, uni_tokens):
+        """
+        Args:
+            x: [B, C, H, W] spatial features
+            uni_tokens: [B, N, D] or [B, D, H, W] UNI tokens
+        """
+        B, C, H, W = x.shape
+        if uni_tokens.dim() == 4:
+            uni_tokens = uni_tokens.permute(0, 2, 3, 1).reshape(B, -1, uni_tokens.shape[1])
+
+        uni_tokens = self.token_norm(uni_tokens)
+
+        q = self.q_proj(self.norm(x)).reshape(B, self.heads, self.head_dim, H * W)
+        q = q.permute(0, 1, 3, 2)  # [B, heads, HW, head_dim]
+
+        k = self.k_proj(uni_tokens).reshape(B, -1, self.heads, self.head_dim)
+        v = self.v_proj(uni_tokens).reshape(B, -1, self.heads, self.head_dim)
+        k = k.permute(0, 2, 3, 1)  # [B, heads, head_dim, N]
+        v = v.permute(0, 2, 1, 3)  # [B, heads, N, head_dim]
+
+        attn = (q @ k) * self.scale
+        attn = attn.softmax(dim=-1)
+        out = attn @ v  # [B, heads, HW, head_dim]
+        out = out.permute(0, 1, 3, 2).reshape(B, C, H, W)
+
+        return x + self.out_proj(out)

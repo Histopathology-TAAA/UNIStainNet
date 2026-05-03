@@ -65,6 +65,8 @@ def main():
         lpips_weight=1.0,
         lpips_256_weight=0.5,
         lpips_512_weight=0.0,
+        l1_fullres_weight=1.0,
+        lpips_fullres_weight=1.0,
         he_edge_weight=0.5,
         l1_lowres_weight=1.0,
         adversarial_weight=0.0,

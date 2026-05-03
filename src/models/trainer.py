@@ -61,6 +61,8 @@ class UNIStainNetTrainer(pl.LightningModule):
         lpips_weight=1.0,
         lpips_256_weight=0.5,
         lpips_512_weight=0.0,
+        l1_fullres_weight=1.0,
+        lpips_fullres_weight=1.0,
         adversarial_weight=1.0,
         dab_intensity_weight=0.1,
         dab_contrast_weight=0.05,
@@ -130,13 +132,13 @@ class UNIStainNetTrainer(pl.LightningModule):
 
         # Discriminator (global multi-scale)
         self.discriminator = MultiScaleDiscriminator(
-            in_channels=6, ndf=ndf, n_layers=disc_n_layers,
+            in_channels=3, ndf=ndf, n_layers=disc_n_layers,
         )
 
         # Crop discriminator (local full-res detail)
         if crop_disc_weight > 0:
             self.crop_discriminator = PatchDiscriminator(
-                in_channels=6, ndf=ndf, n_layers=disc_n_layers,
+                in_channels=3, ndf=ndf, n_layers=disc_n_layers,
             )
         else:
             self.crop_discriminator = None
@@ -298,6 +300,33 @@ class UNIStainNetTrainer(pl.LightningModule):
 
         S = result.shape[1]
         return result.reshape(B, S * S, 1024)  # [B, S*S, 1024]
+
+    def _prepare_uni_sub_crops_from_tensor(self, he_rgb):
+        """Prepare UNI sub-crops from a normalized H&E tensor.
+
+        Args:
+            he_rgb: [B, 3, H, W] in [-1, 1]
+
+        Returns:
+            [B, 16, 3, 224, 224] ImageNet-normalized sub-crops
+        """
+        B, C, H, W = he_rgb.shape
+        grid = 4
+        if H % grid != 0 or W % grid != 0:
+            raise ValueError(f"H&E size {H}x{W} must be divisible by {grid}")
+
+        he_01 = ((he_rgb + 1) / 2).clamp(0, 1)
+        ph = H // grid
+        pw = W // grid
+        patches = he_01.reshape(B, C, grid, ph, grid, pw)
+        patches = patches.permute(0, 2, 4, 1, 3, 5).reshape(B * grid * grid, C, ph, pw)
+
+        patches = F.interpolate(patches, size=(224, 224), mode='bilinear', align_corners=False)
+        mean = torch.tensor([0.485, 0.456, 0.406], device=he_rgb.device).view(1, 3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225], device=he_rgb.device).view(1, 3, 1, 1)
+        patches = (patches - mean) / std
+
+        return patches.reshape(B, grid * grid, 3, 224, 224)
 
     def _apply_cfg_dropout(self, labels, uni_features):
         """Apply classifier-free guidance dropout during training (vectorized)."""
@@ -569,14 +598,15 @@ class UNIStainNetTrainer(pl.LightningModule):
             return loss / len(gen_feats)
 
     def training_step(self, batch, batch_idx):
-        he, her2, uni_or_crops, labels, fnames = batch
+        he_rgb, ihc_rgb, he_h_map, ihc_h_map, labels, fnames = batch
         opt_g, opt_d = self.optimizers()
 
-        # On-the-fly UNI extraction: dataset returns [B, 16, 3, 224, 224] sub-crops
+        # On-the-fly UNI extraction from H&E RGB
         if self._uni_extract_on_the_fly:
-            uni = self._extract_uni_from_sub_crops(uni_or_crops)
+            uni_sub_crops = self._prepare_uni_sub_crops_from_tensor(he_rgb)
+            uni = self._extract_uni_from_sub_crops(uni_sub_crops)
         else:
-            uni = uni_or_crops
+            raise ValueError("UNI features must be provided or extracted on-the-fly.")
 
         # Apply CFG dropout
         labels_dropped, uni_dropped = self._apply_cfg_dropout(labels, uni)
@@ -592,42 +622,48 @@ class UNIStainNetTrainer(pl.LightningModule):
         # ----------------------------------------------------------------
         # Generator step
         # ----------------------------------------------------------------
-        generated = self.generator(he, uni_dropped, labels_dropped)
+        use_aligned = torch.rand(1, device=self.device) < 0.5
+        gen_input = ihc_h_map if use_aligned else he_h_map
+        generated = self.generator(gen_input, uni_dropped, labels_dropped)
 
-        # LPIPS main: 4x downsample (128 for 512 input, 256 for 1024)
-        lpips_main_size = self.hparams.image_size // 4
-        gen_lpips = F.interpolate(generated, size=lpips_main_size, mode='bilinear', align_corners=False)
-        her2_lpips = F.interpolate(her2, size=lpips_main_size, mode='bilinear', align_corners=False)
-        loss_lpips = self.lpips_fn(gen_lpips, her2_lpips).mean()
+        loss_g = torch.tensor(0.0, device=self.device)
+        loss_lpips = torch.tensor(0.0, device=self.device)
 
-        loss_g = self.hparams.lpips_weight * loss_lpips
+        if use_aligned:
+            # Full-res L1 and LPIPS against IHC target
+            loss_l1_full = F.l1_loss(generated, ihc_rgb)
+            loss_lpips_full = self.lpips_fn(generated, ihc_rgb).mean()
+            loss_g = loss_g + self.hparams.l1_fullres_weight * loss_l1_full
+            loss_g = loss_g + self.hparams.lpips_fullres_weight * loss_lpips_full
+            loss_lpips = loss_lpips_full
+            self.log('train/l1_fullres', loss_l1_full, prog_bar=False)
+            self.log('train/lpips_fullres', loss_lpips_full, prog_bar=False)
+        else:
+            # Misalignment-aware losses
+            if self.hparams.l1_lowres_weight > 0:
+                gen_64 = F.interpolate(generated, size=64, mode='bilinear', align_corners=False)
+                tgt_64 = F.interpolate(ihc_rgb, size=64, mode='bilinear', align_corners=False)
+                loss_l1_lowres = F.l1_loss(gen_64, tgt_64)
+                loss_g = loss_g + self.hparams.l1_lowres_weight * loss_l1_lowres
+                self.log('train/l1_lowres', loss_l1_lowres, prog_bar=False)
 
-        # LPIPS fine: 2x downsample (256 for 512 input, 512 for 1024)
-        if self.hparams.lpips_256_weight > 0:
-            lpips_fine_size = self.hparams.image_size // 2
-            gen_fine = F.interpolate(generated, size=lpips_fine_size, mode='bilinear', align_corners=False)
-            her2_fine = F.interpolate(her2, size=lpips_fine_size, mode='bilinear', align_corners=False)
-            loss_lpips_256 = self.lpips_fn(gen_fine, her2_fine).mean()
-            loss_g = loss_g + self.hparams.lpips_256_weight * loss_lpips_256
-            self.log('train/lpips_fine', loss_lpips_256, prog_bar=False)
+            lpips_main_size = self.hparams.image_size // 4
+            gen_lpips = F.interpolate(generated, size=lpips_main_size, mode='bilinear', align_corners=False)
+            tgt_lpips = F.interpolate(ihc_rgb, size=lpips_main_size, mode='bilinear', align_corners=False)
+            loss_lpips = self.lpips_fn(gen_lpips, tgt_lpips).mean()
+            loss_g = loss_g + self.hparams.lpips_weight * loss_lpips
 
-        # LPIPS at full resolution (expensive)
-        if self.hparams.lpips_512_weight > 0:
-            loss_lpips_512 = self.lpips_fn(generated, her2).mean()
-            loss_g = loss_g + self.hparams.lpips_512_weight * loss_lpips_512
-            self.log('train/lpips_fullres', loss_lpips_512, prog_bar=False)
-
-        # Low-resolution L1 (color fidelity, misalignment-robust at 64x64)
-        if self.hparams.l1_lowres_weight > 0:
-            gen_64 = F.interpolate(generated, size=64, mode='bilinear', align_corners=False)
-            her2_64 = F.interpolate(her2, size=64, mode='bilinear', align_corners=False)
-            loss_l1_lowres = F.l1_loss(gen_64, her2_64)
-            loss_g = loss_g + self.hparams.l1_lowres_weight * loss_l1_lowres
-            self.log('train/l1_lowres', loss_l1_lowres, prog_bar=False)
+            if self.hparams.lpips_256_weight > 0:
+                lpips_fine_size = self.hparams.image_size // 2
+                gen_fine = F.interpolate(generated, size=lpips_fine_size, mode='bilinear', align_corners=False)
+                tgt_fine = F.interpolate(ihc_rgb, size=lpips_fine_size, mode='bilinear', align_corners=False)
+                loss_lpips_256 = self.lpips_fn(gen_fine, tgt_fine).mean()
+                loss_g = loss_g + self.hparams.lpips_256_weight * loss_lpips_256
+                self.log('train/lpips_fine', loss_lpips_256, prog_bar=False)
 
         # DAB losses (use original labels, not dropped)
         if self.hparams.dab_intensity_weight > 0:
-            loss_dab = self.compute_dab_intensity_loss(generated, her2)
+            loss_dab = self.compute_dab_intensity_loss(generated, ihc_rgb)
             loss_g = loss_g + self.hparams.dab_intensity_weight * loss_dab
             self.log('train/dab_intensity', loss_dab, prog_bar=False)
 
@@ -638,37 +674,37 @@ class UNIStainNetTrainer(pl.LightningModule):
 
         # Edge loss (boundary sharpness)
         if self.hparams.edge_weight > 0:
-            loss_edge = self.compute_edge_loss(generated, her2)
+            loss_edge = self.compute_edge_loss(generated, ihc_rgb)
             loss_g = loss_g + self.hparams.edge_weight * loss_edge
             self.log('train/edge_loss', loss_edge, prog_bar=False)
 
         # DAB sharpness loss (membrane-localized vs diffuse brown)
         if self.hparams.dab_sharpness_weight > 0:
-            loss_dab_sharp = self.compute_dab_sharpness_loss(generated, her2)
+            loss_dab_sharp = self.compute_dab_sharpness_loss(generated, ihc_rgb)
             loss_g = loss_g + self.hparams.dab_sharpness_weight * loss_dab_sharp
             self.log('train/dab_sharpness', loss_dab_sharp, prog_bar=False)
 
         # Gram-matrix style loss
         if self.hparams.gram_style_weight > 0 and self.vgg_extractor is not None:
-            loss_gram = self.compute_gram_style_loss(generated, her2)
+            loss_gram = self.compute_gram_style_loss(generated, ihc_rgb)
             loss_g = loss_g + self.hparams.gram_style_weight * loss_gram
             self.log('train/gram_style', loss_gram, prog_bar=False)
 
         # H&E edge structure preservation (pixel-aligned)
         if self.hparams.he_edge_weight > 0:
-            loss_he_edge = self.compute_he_edge_loss(generated, he)
+            loss_he_edge = self.compute_he_edge_loss(generated, he_rgb)
             loss_g = loss_g + self.hparams.he_edge_weight * loss_he_edge
             self.log('train/he_edge', loss_he_edge, prog_bar=False)
 
         # Background white loss
         if self.hparams.bg_white_weight > 0:
-            loss_bg = self.compute_background_loss(generated, he)
+            loss_bg = self.compute_background_loss(generated, he_rgb)
             loss_g = loss_g + self.hparams.bg_white_weight * loss_bg
             self.log('train/bg_white', loss_bg, prog_bar=False)
 
         # PatchNCE loss (contrastive: H&E input vs generated, never sees GT)
         if self.hparams.patchnce_weight > 0 and self.patchnce_loss is not None:
-            feats_he = self.generator.encode(he)
+            feats_he = self.generator.encode(he_h_map)
             feats_gen = self.generator.encode(generated)
             loss_nce = self.patchnce_loss(feats_he, feats_gen)
             loss_g = loss_g + self.hparams.patchnce_weight * loss_nce
@@ -686,21 +722,17 @@ class UNIStainNetTrainer(pl.LightningModule):
         img_sz = self.hparams.image_size
         # Pre-compute disc-resolution tensors (512 for 1024 input, identity for 512)
         if img_sz == 1024:
-            he_for_disc = F.interpolate(he, size=512, mode='bilinear', align_corners=False)
-            her2_for_disc = F.interpolate(her2, size=512, mode='bilinear', align_corners=False)
+            ihc_for_disc = F.interpolate(ihc_rgb, size=512, mode='bilinear', align_corners=False)
         else:
-            he_for_disc = he
-            her2_for_disc = her2
+            ihc_for_disc = ihc_rgb
         if self.global_step >= self.hparams.adversarial_start_step and any_adv:
             if img_sz == 1024:
                 gen_for_disc = F.interpolate(generated, size=512, mode='bilinear', align_corners=False)
             else:
                 gen_for_disc = generated
 
-            # Conditional discriminator (paired: generated+HE vs real_HER2+HE)
             if self.hparams.adversarial_weight > 0:
-                fake_input = torch.cat([gen_for_disc, he_for_disc], dim=1)
-                disc_outputs = self.discriminator(fake_input)
+                disc_outputs = self.discriminator(gen_for_disc)
                 loss_adv = sum(hinge_loss_g(out) for out in disc_outputs) / len(disc_outputs)
                 loss_g = loss_g + self.hparams.adversarial_weight * loss_adv
 
@@ -709,17 +741,16 @@ class UNIStainNetTrainer(pl.LightningModule):
                     self.uncond_discriminator is not None):
                 _, fake_feats = self.uncond_discriminator(gen_for_disc, return_features=True)
                 with torch.no_grad():
-                    _, real_feats = self.uncond_discriminator(her2_for_disc, return_features=True)
+                    _, real_feats = self.uncond_discriminator(ihc_for_disc, return_features=True)
                 loss_feat_match = feature_matching_loss(fake_feats, real_feats)
                 loss_g = loss_g + self.hparams.feat_match_weight * loss_feat_match
 
             # Crop discriminator: random crops at full resolution
             if self.crop_discriminator is not None and self.hparams.crop_disc_weight > 0:
-                fake_input_crop = torch.cat([generated, he], dim=1)
                 cs = self.hparams.crop_size
                 top = torch.randint(0, img_sz - cs, (1,)).item()
                 left = torch.randint(0, img_sz - cs, (1,)).item()
-                fake_crop = fake_input_crop[:, :, top:top+cs, left:left+cs]
+                fake_crop = generated[:, :, top:top+cs, left:left+cs]
                 loss_crop_adv = hinge_loss_g(self.crop_discriminator(fake_crop))
                 loss_g = loss_g + self.hparams.crop_disc_weight * loss_crop_adv
 
@@ -749,7 +780,7 @@ class UNIStainNetTrainer(pl.LightningModule):
         loss_uncond_d = torch.tensor(0.0, device=self.device)
         if self.global_step >= self.hparams.adversarial_start_step and any_adv:
             with torch.no_grad():
-                fake_detached = self.generator(he, uni_dropped, labels_dropped)
+                fake_detached = self.generator(gen_input, uni_dropped, labels_dropped)
 
             # For 1024, downsample for disc
             if img_sz == 1024:
@@ -757,13 +788,9 @@ class UNIStainNetTrainer(pl.LightningModule):
             else:
                 fake_det_disc = fake_detached
 
-            # Conditional discriminator
             if self.hparams.adversarial_weight > 0:
-                real_input = torch.cat([her2_for_disc, he_for_disc], dim=1)
-                fake_input = torch.cat([fake_det_disc, he_for_disc], dim=1)
-
-                disc_real = self.discriminator(real_input)
-                disc_fake = self.discriminator(fake_input)
+                disc_real = self.discriminator(ihc_for_disc)
+                disc_fake = self.discriminator(fake_det_disc)
 
                 loss_d = sum(
                     hinge_loss_d(dr, df)
@@ -772,13 +799,11 @@ class UNIStainNetTrainer(pl.LightningModule):
 
             # Crop discriminator
             if self.crop_discriminator is not None and self.hparams.crop_disc_weight > 0:
-                real_input_c = torch.cat([her2, he], dim=1)
-                fake_input_c = torch.cat([fake_detached, he], dim=1)
                 cs = self.hparams.crop_size
                 top = torch.randint(0, img_sz - cs, (1,)).item()
                 left = torch.randint(0, img_sz - cs, (1,)).item()
-                real_crop = real_input_c[:, :, top:top+cs, left:left+cs]
-                fake_crop = fake_input_c[:, :, top:top+cs, left:left+cs]
+                real_crop = ihc_rgb[:, :, top:top+cs, left:left+cs]
+                fake_crop = fake_detached[:, :, top:top+cs, left:left+cs]
                 loss_crop_d = hinge_loss_d(
                     self.crop_discriminator(real_crop),
                     self.crop_discriminator(fake_crop),
@@ -788,7 +813,7 @@ class UNIStainNetTrainer(pl.LightningModule):
             # Unconditional discriminator
             if self.uncond_discriminator is not None and (
                     self.hparams.uncond_disc_weight > 0 or self.hparams.feat_match_weight > 0):
-                uncond_real_out = self.uncond_discriminator(her2_for_disc)
+                uncond_real_out = self.uncond_discriminator(ihc_for_disc)
                 uncond_fake_out = self.uncond_discriminator(fake_det_disc)
                 loss_uncond_d = hinge_loss_d(uncond_real_out, uncond_fake_out)
                 loss_d = loss_d + max(self.hparams.uncond_disc_weight, 1.0) * loss_uncond_d
@@ -798,7 +823,7 @@ class UNIStainNetTrainer(pl.LightningModule):
             if self.global_step % self.hparams.r1_every == 0:
                 with torch.amp.autocast('cuda', enabled=False):
                     if self.hparams.adversarial_weight > 0:
-                        real_input_r1 = torch.cat([her2_for_disc, he_for_disc], dim=1).float().detach().requires_grad_(True)
+                        real_input_r1 = ihc_for_disc.float().detach().requires_grad_(True)
                         for disc in [self.discriminator.disc_512]:
                             d_real = disc(real_input_r1)
                             grad_real = torch.autograd.grad(
@@ -808,10 +833,10 @@ class UNIStainNetTrainer(pl.LightningModule):
                             loss_r1 = loss_r1 + self.hparams.r1_weight * grad_real.pow(2).mean()
                     if self.uncond_discriminator is not None and (
                             self.hparams.uncond_disc_weight > 0 or self.hparams.feat_match_weight > 0):
-                        her2_r1 = her2_for_disc.float().detach().requires_grad_(True)
-                        d_real_uncond = self.uncond_discriminator(her2_r1)
+                        ihc_r1 = ihc_for_disc.float().detach().requires_grad_(True)
+                        d_real_uncond = self.uncond_discriminator(ihc_r1)
                         grad_uncond = torch.autograd.grad(
-                            outputs=d_real_uncond.sum(), inputs=her2_r1,
+                            outputs=d_real_uncond.sum(), inputs=ihc_r1,
                             create_graph=True,
                         )[0]
                         loss_r1 = loss_r1 + self.hparams.r1_weight * grad_uncond.pow(2).mean()
@@ -869,13 +894,14 @@ class UNIStainNetTrainer(pl.LightningModule):
             })
 
     def validation_step(self, batch, batch_idx):
-        he, her2, uni_or_crops, labels, fnames = batch
+        he_rgb, ihc_rgb, he_h_map, ihc_h_map, labels, fnames = batch
 
         # On-the-fly UNI extraction
         if self._uni_extract_on_the_fly:
-            uni = self._extract_uni_from_sub_crops(uni_or_crops)
+            uni_sub_crops = self._prepare_uni_sub_crops_from_tensor(he_rgb)
+            uni = self._extract_uni_from_sub_crops(uni_sub_crops)
         else:
-            uni = uni_or_crops
+            raise ValueError("UNI features must be provided or extracted on-the-fly.")
 
         if self.hparams.disable_uni:
             uni = torch.zeros_like(uni)
@@ -885,23 +911,23 @@ class UNIStainNetTrainer(pl.LightningModule):
 
         # Use EMA generator
         with torch.no_grad():
-            generated = self.generator_ema(he, uni, labels)
+            generated = self.generator_ema(he_h_map, uni, labels)
 
         # LPIPS (4x downsample: 128 for 512, 256 for 1024)
         lpips_size = self.hparams.image_size // 4
         gen_lpips = F.interpolate(generated, size=lpips_size, mode='bilinear', align_corners=False)
-        her2_lpips = F.interpolate(her2, size=lpips_size, mode='bilinear', align_corners=False)
-        lpips_val = self.lpips_fn(gen_lpips, her2_lpips).mean()
+        ihc_lpips = F.interpolate(ihc_rgb, size=lpips_size, mode='bilinear', align_corners=False)
+        lpips_val = self.lpips_fn(gen_lpips, ihc_lpips).mean()
 
         # SSIM
         gen_01 = ((generated + 1) / 2).clamp(0, 1)
-        her2_01 = ((her2 + 1) / 2).clamp(0, 1)
+        her2_01 = ((ihc_rgb + 1) / 2).clamp(0, 1)
         from torchmetrics.functional.image import structural_similarity_index_measure
         ssim_val = structural_similarity_index_measure(gen_01, her2_01, data_range=1.0)
 
         # DAB MAE (canonical: mean of top-10%)
         dab_gen = self.dab_extractor.extract_dab_intensity(generated.float().cpu(), normalize="none")
-        dab_real = self.dab_extractor.extract_dab_intensity(her2.float().cpu(), normalize="none")
+        dab_real = self.dab_extractor.extract_dab_intensity(ihc_rgb.float().cpu(), normalize="none")
 
         def p90_score(dab):
             flat = dab.flatten()
@@ -928,15 +954,15 @@ class UNIStainNetTrainer(pl.LightningModule):
                     self._val_per_label_samples[lbl] = {'he': [], 'real': [], 'gen': []}
                 bucket = self._val_per_label_samples[lbl]
                 if len(bucket['he']) < 4:
-                    bucket['he'].append(he[i].cpu())
+                    bucket['he'].append(he_rgb[i].cpu())
                     bucket['real'].append(her2_01[i].cpu())
                     bucket['gen'].append(gen_01[i].cpu())
 
         # Log sample grids: first batch (fixed) + one random batch
         if batch_idx == 0:
-            self._log_sample_grid(he, her2_01, gen_01, 'val/samples_fixed')
+            self._log_sample_grid(he_rgb, her2_01, gen_01, 'val/samples_fixed')
         elif batch_idx == self._random_val_batch_idx:
-            self._log_sample_grid(he, her2_01, gen_01, 'val/samples_random')
+            self._log_sample_grid(he_rgb, her2_01, gen_01, 'val/samples_random')
 
     def on_validation_epoch_end(self):
         """Log per-label sample grids if multiple labels are present."""
