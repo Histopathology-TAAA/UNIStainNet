@@ -114,4 +114,17 @@ python scripts/train/train_mist.py \
     --batch_size 8 \
     --max_epochs 100 \
     --ckpt_dir   "$STUDIO_ROOT/checkpoints/destaining_v1" \
-    --wandb_name destaining_v1_attention
+    --wandb_name destaining_v1_attention_batch8
+
+# For copy and paste command running uncomment, copy, and use this code 
+
+# python scripts/train/train_mist.py \
+#     --data_dir   "$HOME/data/MIST" \
+#     --stains     HER2 ER Ki67 PR \
+#     --batch_size 8 \
+#     --max_epochs 100 \
+#     --ckpt_dir   "$HOME/checkpoints/destaining_v1" \
+#     --wandb_name destaining_v1_attention_batch8
+
+
+# change the wandb name if needed to log 
