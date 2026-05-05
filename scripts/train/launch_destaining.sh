@@ -3,17 +3,18 @@
 # UNIStainNet Destaining Training — Lightning AI Launch Script
 #
 # Assumed Lightning AI layout:
-#   ~/teamspace/studios/this_studio/
+#   /teamspace/studios/this_studio/     ($HOME on Lightning AI)
 #       UNISTAINNET/          ← this repo
 #       Destained_Results/    ← zipped datasets (HER2-Destained.zip, etc.)
 #       data/MIST/            ← created by this script
 #
-# Run from: ~/teamspace/studios/this_studio/UNISTAINNET/
+# Run from: /teamspace/studios/this_studio/UNISTAINNET/
+# NOTE: On Lightning AI, $HOME = /teamspace/studios/this_studio (not ~/teamspace/...)
 # =============================================================================
 
 set -e   # stop immediately on any error
 
-STUDIO_ROOT="$HOME/teamspace/studios/this_studio"
+STUDIO_ROOT="$HOME"  # on Lightning AI this is /teamspace/studios/this_studio
 REPO_DIR="$STUDIO_ROOT/UNISTAINNET"
 ZIP_DIR="$STUDIO_ROOT/Destained_Results"
 DATA_DIR="$STUDIO_ROOT/data/MIST"

@@ -137,7 +137,7 @@ These must be renamed to `HER2/`, `ER/`, `Ki67/`, `PR/` — the launch script ha
 
 ### File Layout Assumption
 ```
-~/teamspace/studios/this_studio/
+/teamspace/studios/this_studio/   ← this IS $HOME on Lightning AI, do NOT use ~/teamspace/...
     UNISTAINNET/          ← this repo
     Destained_Results/    ← downloaded zips: HER2-Destained.zip, ER-Destained.zip, ...
     data/MIST/            ← created by launch script
@@ -186,14 +186,14 @@ The script: unzips → renames folders → verifies 8 subfolders per stain → i
 
 ### Manual Training Command
 ```bash
-cd ~/teamspace/studios/this_studio/UNISTAINNET
+cd /teamspace/studios/this_studio/UNIStainNet
 export PYTHONPATH=$PWD
 python scripts/train/train_mist.py \
-    --data_dir  ~/teamspace/studios/this_studio/data/MIST \
+    --data_dir  /teamspace/studios/this_studio/data/MIST \
     --stains    HER2 ER Ki67 PR \
     --batch_size 8 \
     --max_epochs 100 \
-    --ckpt_dir  ~/teamspace/studios/this_studio/checkpoints/destaining_v1 \
+    --ckpt_dir  /teamspace/studios/this_studio/checkpoints/destaining_v1 \
     --wandb_name destaining_v1_attention
 ```
 
