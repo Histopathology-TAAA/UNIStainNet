@@ -211,6 +211,12 @@ class UNIStainNetTrainer(pl.LightningModule):
             disc_params += list(self.crop_discriminator.parameters())
         if self.uncond_discriminator is not None:
             disc_params += list(self.uncond_discriminator.parameters())
+        # PyTorch Adam requires a non-empty param list. When all discriminators are
+        # disabled (e.g. sanity-check / ablation), register a dummy zero-grad param
+        # so Lightning's two-optimizer contract is still satisfied.
+        if not disc_params:
+            self._disc_dummy = nn.Parameter(torch.zeros(1), requires_grad=True)
+            disc_params = [self._disc_dummy]
         opt_d = torch.optim.Adam(
             disc_params,
             lr=self.hparams.disc_lr,

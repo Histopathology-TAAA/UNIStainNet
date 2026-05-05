@@ -125,15 +125,20 @@ def r1_gradient_penalty(discriminator, real_images, weight=10.0):
 
 
 def feature_matching_loss(d_feats_fake, d_feats_real):
-    """Feature matching loss: L1 between discriminator features of fake vs real.
+    """Feature matching loss: L1 between intermediate discriminator features.
 
-    Matches statistics at each discriminator layer. Alignment-free because
-    it compares feature distributions, not pixel-level correspondence.
+    Excludes the final logit layer ([:-1]) — comparing raw scores is redundant
+    with the adversarial loss and blurs the texture-matching signal.
+    Alignment-free because it compares feature distributions, not pixel correspondence.
     """
+    feats_fake = d_feats_fake[:-1]
+    feats_real = d_feats_real[:-1]
+    if not feats_fake:
+        return torch.tensor(0.0, device=d_feats_fake[0].device)
     loss = 0.0
-    for feat_fake, feat_real in zip(d_feats_fake, d_feats_real):
+    for feat_fake, feat_real in zip(feats_fake, feats_real):
         loss += torch.nn.functional.l1_loss(feat_fake, feat_real.detach())
-    return loss / len(d_feats_fake)
+    return loss / len(feats_fake)
 
 
 class MultiScaleDiscriminator(nn.Module):

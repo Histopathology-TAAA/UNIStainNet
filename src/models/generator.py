@@ -190,17 +190,14 @@ class SPADEUNetGenerator(nn.Module):
         _ = self.class_embed(labels)
 
         # Edge encoder (parallel structure pathway)
-        # Edge encoder always operates at 512 resolution
+        # Edge encoder always operates at 512 resolution.
+        # Both v1 and v2 now accept 1-channel H-map natively — no repeat needed.
         if self.edge_encoder_type:
-            if h_maps.shape[1] == 1:
-                edge_input = h_maps.repeat(1, 3, 1, 1)
+            if self.image_size == 1024:
+                edge_input = F.interpolate(h_maps, size=512, mode='bilinear', align_corners=False)
             else:
                 edge_input = h_maps
-            if self.image_size == 1024:
-                h_512 = F.interpolate(edge_input, size=512, mode='bilinear', align_corners=False)
-                edge_maps = self.edge_encoder(h_512)
-            else:
-                edge_maps = self.edge_encoder(edge_input)
+            edge_maps = self.edge_encoder(edge_input)
         else:
             edge_maps = None
 
