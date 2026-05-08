@@ -29,11 +29,12 @@ LABEL_TO_STAIN = {v: k for k, v in STAIN_TO_LABEL.items()}
 
 
 class MISTMultiStainCropDataset(CropPairedDataset):
-    """Multi-stain MIST dataset with paired RGB + H-map inputs.
+    """Multi-stain MIST dataset with paired RGB + H-map + optional E-map inputs.
 
     Expects per-stain folders with the following structure:
         trainA/, trainA-H/, trainB/, trainB-H/, valA/, valA-H/, valB/, valB-H/
-    Returns: (he_rgb, ihc_rgb, he_h_map, ihc_h_map, stain_label, filename)
+    Optionally: trainA-E/, valA-E/ (Eosin maps — zeros returned if absent)
+    Returns: (he_rgb, ihc_rgb, he_h_map, ihc_h_map, he_e_map, stain_label, filename)
     """
 
     def __init__(
@@ -56,7 +57,7 @@ class MISTMultiStainCropDataset(CropPairedDataset):
         )
 
         self.base_dir = Path(base_dir)
-        self.samples = []  # (he_path, ihc_path, he_h_path, ihc_h_path, stain_label)
+        self.samples = []  # (he_path, ihc_path, he_h_path, ihc_h_path, he_e_path|None, stain_label)
 
         split_he = 'trainA' if split == 'train' else 'valA'
         split_ihc = 'trainB' if split == 'train' else 'valB'
@@ -71,6 +72,7 @@ class MISTMultiStainCropDataset(CropPairedDataset):
             ihc_dir = self.base_dir / stain / split_ihc
             he_h_dir = self.base_dir / stain / f"{split_he}-H"
             ihc_h_dir = self.base_dir / stain / f"{split_ihc}-H"
+            he_e_dir = self.base_dir / stain / f"{split_he}-E"
 
             if not he_dir.exists():
                 raise FileNotFoundError(f"H&E directory not found: {he_dir}")
@@ -80,6 +82,10 @@ class MISTMultiStainCropDataset(CropPairedDataset):
                 raise FileNotFoundError(f"H&E H-map directory not found: {he_h_dir}")
             if not ihc_h_dir.exists():
                 raise FileNotFoundError(f"IHC H-map directory not found: {ihc_h_dir}")
+
+            has_eosin = he_e_dir.exists()
+            if not has_eosin:
+                print(f"  {stain}: Eosin dir not found ({he_e_dir.name}/) — zeros will be used")
 
             he_files = sorted([f for f in os.listdir(he_dir)
                                if f.lower().endswith(valid_exts)])
@@ -97,19 +103,34 @@ class MISTMultiStainCropDataset(CropPairedDataset):
             he_h_stems = {Path(f).stem: f for f in he_h_files}
             ihc_h_stems = {Path(f).stem: f for f in ihc_h_files}
 
-            common = sorted(
-                set(he_stems.keys())
-                & set(ihc_stems.keys())
-                & set(he_h_stems.keys())
-                & set(ihc_h_stems.keys())
-            )
+            if has_eosin:
+                he_e_files = sorted([f for f in os.listdir(he_e_dir)
+                                     if f.lower().endswith(valid_exts)])
+                he_e_stems = {Path(f).stem: f for f in he_e_files}
+                common = sorted(
+                    set(he_stems.keys())
+                    & set(ihc_stems.keys())
+                    & set(he_h_stems.keys())
+                    & set(ihc_h_stems.keys())
+                    & set(he_e_stems.keys())
+                )
+            else:
+                he_e_stems = {}
+                common = sorted(
+                    set(he_stems.keys())
+                    & set(ihc_stems.keys())
+                    & set(he_h_stems.keys())
+                    & set(ihc_h_stems.keys())
+                )
 
             for stem in common:
+                he_e_path = (he_e_dir / he_e_stems[stem]) if has_eosin else None
                 self.samples.append((
                     he_dir / he_stems[stem],
                     ihc_dir / ihc_stems[stem],
                     he_h_dir / he_h_stems[stem],
                     ihc_h_dir / ihc_h_stems[stem],
+                    he_e_path,
                     stain_label,
                 ))
 
@@ -117,7 +138,7 @@ class MISTMultiStainCropDataset(CropPairedDataset):
 
         # Per-stain counts for logging
         from collections import Counter
-        dist = Counter(s[4] for s in self.samples)
+        dist = Counter(s[5] for s in self.samples)
         stain_counts = {LABEL_TO_STAIN[k]: v for k, v in sorted(dist.items())}
         print(f"Multi-Stain Crop Dataset ({split}): {len(self.samples)} total | {stain_counts}")
 
@@ -125,11 +146,12 @@ class MISTMultiStainCropDataset(CropPairedDataset):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        he_path, ihc_path, he_h_path, ihc_h_path, stain_label = self.samples[idx]
+        he_path, ihc_path, he_h_path, ihc_h_path, he_e_path, stain_label = self.samples[idx]
         he_img = Image.open(he_path).convert('RGB')
         ihc_img = Image.open(ihc_path).convert('RGB')
         he_h_img = Image.open(he_h_path).convert('L')
         ihc_h_img = Image.open(ihc_h_path).convert('L')
+        he_e_img = Image.open(he_e_path).convert('L') if he_e_path is not None else None
         return self._process_quad(
             he_img,
             ihc_img,
@@ -137,17 +159,18 @@ class MISTMultiStainCropDataset(CropPairedDataset):
             ihc_h_img,
             stain_label,
             he_path.name,
+            he_e_img,
         )
 
-    def _random_crop_quad(self, he_img, ihc_img, he_h_img, ihc_h_img):
-        """Take the same random crop from all four images."""
+    def _random_crop_quad(self, he_img, ihc_img, he_h_img, ihc_h_img, he_e_img=None):
+        """Take the same random crop from all images."""
         w, h = he_img.size
         if w < self.crop_size or h < self.crop_size:
             raise ValueError(
                 f"Image size {w}x{h} smaller than crop size {self.crop_size}"
             )
         if w == self.crop_size and h == self.crop_size:
-            return he_img, ihc_img, he_h_img, ihc_h_img
+            return he_img, ihc_img, he_h_img, ihc_h_img, he_e_img
 
         left = random.randint(0, w - self.crop_size)
         top = random.randint(0, h - self.crop_size)
@@ -157,20 +180,25 @@ class MISTMultiStainCropDataset(CropPairedDataset):
             ihc_img.crop(box),
             he_h_img.crop(box),
             ihc_h_img.crop(box),
+            he_e_img.crop(box) if he_e_img is not None else None,
         )
 
-    def _apply_paired_augmentations_quad(self, he_img, ihc_img, he_h_img, ihc_h_img):
-        """Apply identical spatial transforms to all four images."""
+    def _apply_paired_augmentations_quad(self, he_img, ihc_img, he_h_img, ihc_h_img, he_e_img=None):
+        """Apply identical spatial transforms to all images."""
         if random.random() > 0.5:
             he_img = TF.hflip(he_img)
             ihc_img = TF.hflip(ihc_img)
             he_h_img = TF.hflip(he_h_img)
             ihc_h_img = TF.hflip(ihc_h_img)
+            if he_e_img is not None:
+                he_e_img = TF.hflip(he_e_img)
         if random.random() > 0.5:
             he_img = TF.vflip(he_img)
             ihc_img = TF.vflip(ihc_img)
             he_h_img = TF.vflip(he_h_img)
             ihc_h_img = TF.vflip(ihc_h_img)
+            if he_e_img is not None:
+                he_e_img = TF.vflip(he_e_img)
         if random.random() > 0.5:
             k = random.choice([1, 2, 3])
             angle = k * 90
@@ -178,6 +206,8 @@ class MISTMultiStainCropDataset(CropPairedDataset):
             ihc_img = TF.rotate(ihc_img, angle)
             he_h_img = TF.rotate(he_h_img, angle)
             ihc_h_img = TF.rotate(ihc_h_img, angle)
+            if he_e_img is not None:
+                he_e_img = TF.rotate(he_e_img, angle)
         if random.random() > 0.7:
             angle = random.uniform(-15, 15)
             translate = [random.uniform(-0.05, 0.05) * self.image_size[1],
@@ -191,17 +221,20 @@ class MISTMultiStainCropDataset(CropPairedDataset):
                                  interpolation=T.InterpolationMode.BILINEAR)
             ihc_h_img = TF.affine(ihc_h_img, angle, translate, scale, shear=0,
                                   interpolation=T.InterpolationMode.BILINEAR)
-        return he_img, ihc_img, he_h_img, ihc_h_img
+            if he_e_img is not None:
+                he_e_img = TF.affine(he_e_img, angle, translate, scale, shear=0,
+                                     interpolation=T.InterpolationMode.BILINEAR)
+        return he_img, ihc_img, he_h_img, ihc_h_img, he_e_img
 
-    def _process_quad(self, he_img, ihc_img, he_h_img, ihc_h_img, label, filename):
-        """Common processing for RGB + H-map pairs."""
-        he_crop, ihc_crop, he_h_crop, ihc_h_crop = self._random_crop_quad(
-            he_img, ihc_img, he_h_img, ihc_h_img
+    def _process_quad(self, he_img, ihc_img, he_h_img, ihc_h_img, label, filename, he_e_img=None):
+        """Common processing for RGB + H-map + optional E-map."""
+        he_crop, ihc_crop, he_h_crop, ihc_h_crop, he_e_crop = self._random_crop_quad(
+            he_img, ihc_img, he_h_img, ihc_h_img, he_e_img
         )
 
         if self.augment:
-            he_crop, ihc_crop, he_h_crop, ihc_h_crop = self._apply_paired_augmentations_quad(
-                he_crop, ihc_crop, he_h_crop, ihc_h_crop
+            he_crop, ihc_crop, he_h_crop, ihc_h_crop, he_e_crop = self._apply_paired_augmentations_quad(
+                he_crop, ihc_crop, he_h_crop, ihc_h_crop, he_e_crop
             )
             he_aug = self._apply_he_color_augmentation(he_crop)
         else:
@@ -212,7 +245,12 @@ class MISTMultiStainCropDataset(CropPairedDataset):
         he_h_tensor = TF.normalize(TF.to_tensor(he_h_crop), [0.5], [0.5])
         ihc_h_tensor = TF.normalize(TF.to_tensor(ihc_h_crop), [0.5], [0.5])
 
-        return he_tensor, ihc_tensor, he_h_tensor, ihc_h_tensor, label, filename
+        if he_e_crop is not None:
+            he_e_tensor = TF.normalize(TF.to_tensor(he_e_crop), [0.5], [0.5])
+        else:
+            he_e_tensor = torch.zeros(1, *self.image_size)
+
+        return he_tensor, ihc_tensor, he_h_tensor, ihc_h_tensor, he_e_tensor, label, filename
 
 
 class MISTMultiStainCropDataModule(pl.LightningDataModule):

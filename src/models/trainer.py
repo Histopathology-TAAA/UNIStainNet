@@ -24,7 +24,7 @@ import torchvision
 import wandb
 
 from src.models.discriminator import (
-    PatchDiscriminator, MultiScaleDiscriminator,
+    PatchDiscriminator, MultiScaleDiscriminator, ProjectionDiscriminator,
     hinge_loss_d, hinge_loss_g, r1_gradient_penalty, feature_matching_loss,
 )
 from src.models.generator import SPADEUNetGenerator
@@ -106,6 +106,27 @@ class UNIStainNetTrainer(pl.LightningModule):
         uni_spade_at_512=False,
         # Per-label names for multi-stain logging
         label_names=None,
+        # Mixed-domain routing: probability of Case B (H&E H-map, misaligned).
+        # 0.5 = classic 50/50. Reduce to 0.25 in V2 (after Eosin encoder is added)
+        # so 75% of steps get full-res aligned supervision. Do NOT drop below 0.20
+        # or the model will suffer inference shock (H&E H-map at test time becomes OOD).
+        case_b_prob=0.5,
+        # Eosin bottleneck injection (requires trainA-E / valA-E data dirs)
+        use_eosin_encoder=False,
+        eosin_out_ch=64,
+        # IHC-to-IHC Sobel edge loss (Case A only — pixel-aligned boundary supervision)
+        # Disable: set ihc_edge_weight=0.0
+        ihc_edge_weight=0.0,
+        # DAB distribution matching: Wasserstein-1 on OD histograms (both cases)
+        # Disable: set dab_histo_weight=0.0
+        dab_histo_weight=0.0,
+        # Block-level DAB mean matching (Case A only — requires spatial alignment)
+        # Disable: set dab_block_weight=0.0
+        dab_block_weight=0.0,
+        dab_block_size=32,
+        # Stain-conditioned projection discriminator (Miyato & Koyama, 2018)
+        # Disable: set proj_disc_weight=0.0 — discriminator not instantiated at all
+        proj_disc_weight=0.0,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -128,6 +149,8 @@ class UNIStainNetTrainer(pl.LightningModule):
             uni_spatial_size=uni_spatial_size,
             image_size=image_size,
             uni_spade_at_512=uni_spade_at_512,
+            use_eosin_encoder=use_eosin_encoder,
+            eosin_out_ch=eosin_out_ch,
         )
 
         # Discriminator (global multi-scale) — only instantiate if adversarial loss is active.
@@ -147,7 +170,7 @@ class UNIStainNetTrainer(pl.LightningModule):
         else:
             self.crop_discriminator = None
 
-        # Unconditional discriminator (HER2-only, alignment-free texture judge)
+        # Unconditional discriminator (alignment-free texture judge)
         # Also needed for feature matching loss (FM uses uncond disc features)
         if uncond_disc_weight > 0 or feat_match_weight > 0:
             self.uncond_discriminator = PatchDiscriminator(
@@ -155,6 +178,17 @@ class UNIStainNetTrainer(pl.LightningModule):
             )
         else:
             self.uncond_discriminator = None
+
+        # Stain-conditioned projection discriminator
+        # Sees (IHC image, stain_label) → learns stain-specific realism criteria.
+        # HER2: penalizes nuclear DAB; Ki67/ER/PR: rewards nuclear DAB.
+        if proj_disc_weight > 0:
+            self.proj_discriminator = ProjectionDiscriminator(
+                in_channels=3, ndf=ndf, n_layers=disc_n_layers,
+                num_stains=num_classes, stain_dim=class_dim,
+            )
+        else:
+            self.proj_discriminator = None
 
         # PatchNCE loss (contrastive, alignment-free: H&E input vs generated)
         if patchnce_weight > 0:
@@ -193,8 +227,9 @@ class UNIStainNetTrainer(pl.LightningModule):
         n_disc = sum(p.numel() for p in self.discriminator.parameters()) if self.discriminator else 0
         n_crop = sum(p.numel() for p in self.crop_discriminator.parameters()) if self.crop_discriminator else 0
         n_uncond = sum(p.numel() for p in self.uncond_discriminator.parameters()) if self.uncond_discriminator else 0
+        n_proj = sum(p.numel() for p in self.proj_discriminator.parameters()) if self.proj_discriminator else 0
         print(f"Generator: {n_gen:,} params")
-        print(f"Discriminator: {n_disc:,} params (global) + {n_crop:,} (crop) + {n_uncond:,} (uncond)")
+        print(f"Discriminator: {n_disc:,} (global) + {n_crop:,} (crop) + {n_uncond:,} (uncond) + {n_proj:,} (proj-stain)")
 
     def configure_optimizers(self):
         gen_params = list(self.generator.parameters())
@@ -211,6 +246,8 @@ class UNIStainNetTrainer(pl.LightningModule):
             disc_params += list(self.crop_discriminator.parameters())
         if self.uncond_discriminator is not None:
             disc_params += list(self.uncond_discriminator.parameters())
+        if self.proj_discriminator is not None:
+            disc_params += list(self.proj_discriminator.parameters())
         # PyTorch Adam requires a non-empty param list. When all discriminators are
         # disabled (e.g. sanity-check / ablation), register a dummy zero-grad param
         # so Lightning's two-optimizer contract is still satisfied.
@@ -607,8 +644,70 @@ class UNIStainNetTrainer(pl.LightningModule):
 
             return loss / len(gen_feats)
 
+    def compute_dab_histogram_loss(self, generated, target):
+        """Wasserstein-1 on DAB optical density distributions.
+
+        Compares the sorted OD value distributions (not spatial layout) so it
+        is alignment-free — valid in both Case A (aligned) and Case B (misaligned).
+        Catches distribution shape errors: e.g., a uniform 1+ output that fools
+        the mean-intensity loss but has the wrong bimodal 0/3+ distribution.
+
+        Disable: set dab_histo_weight=0.0
+        """
+        with torch.amp.autocast('cuda', enabled=False):
+            gen = generated.float()
+            tgt = target.float()
+
+            dab_gen = self.dab_extractor.extract_dab_intensity(gen, normalize="none")
+            dab_tgt = self.dab_extractor.extract_dab_intensity(tgt, normalize="none")
+
+            B = dab_gen.shape[0]
+            gen_flat = dab_gen.reshape(B, -1)   # [B, H*W]
+            tgt_flat = dab_tgt.reshape(B, -1)
+
+            # Clamp at 99th percentile of target to suppress outlier noise
+            p99 = torch.quantile(tgt_flat, 0.99, dim=1, keepdim=True)
+            gen_flat = gen_flat.clamp(max=p99)
+            tgt_flat = tgt_flat.clamp(max=p99)
+
+            # Sorted L1 = Wasserstein-1 between OD distributions
+            gen_sorted, _ = gen_flat.sort(dim=1)
+            tgt_sorted, _ = tgt_flat.sort(dim=1)
+
+            return F.l1_loss(gen_sorted, tgt_sorted.detach())
+
+    def compute_dab_block_loss(self, generated, target):
+        """Per-block DAB mean matching — spatial DAB distribution supervisor.
+
+        Divides the image into dab_block_size×dab_block_size patches and matches
+        per-block DAB means. Forces the generator to place DAB *where* the ground
+        truth has it, not just match the global intensity.
+
+        CASE A ONLY — requires pixel-aligned IHC ground truth. Using in Case B
+        would be equivalent to the feature-matching spatial-alignment bug.
+
+        Disable: set dab_block_weight=0.0
+        """
+        with torch.amp.autocast('cuda', enabled=False):
+            gen = generated.float()
+            tgt = target.float()
+
+            dab_gen = self.dab_extractor.extract_dab_intensity(gen, normalize="none")
+            dab_tgt = self.dab_extractor.extract_dab_intensity(tgt, normalize="none")
+
+            if dab_gen.dim() == 3:
+                dab_gen = dab_gen.unsqueeze(1)   # [B, 1, H, W]
+            if dab_tgt.dim() == 3:
+                dab_tgt = dab_tgt.unsqueeze(1)
+
+            bs = self.hparams.dab_block_size
+            gen_blocks = F.avg_pool2d(dab_gen, kernel_size=bs, stride=bs)
+            tgt_blocks = F.avg_pool2d(dab_tgt, kernel_size=bs, stride=bs)
+
+            return F.l1_loss(gen_blocks, tgt_blocks.detach())
+
     def training_step(self, batch, batch_idx):
-        he_rgb, ihc_rgb, he_h_map, ihc_h_map, labels, fnames = batch
+        he_rgb, ihc_rgb, he_h_map, ihc_h_map, he_e_map, labels, fnames = batch
         opt_g, opt_d = self.optimizers()
 
         # On-the-fly UNI extraction from H&E RGB
@@ -632,9 +731,9 @@ class UNIStainNetTrainer(pl.LightningModule):
         # ----------------------------------------------------------------
         # Generator step
         # ----------------------------------------------------------------
-        use_aligned = torch.rand(1, device=self.device) < 0.5
+        use_aligned = torch.rand(1, device=self.device) > self.hparams.case_b_prob
         gen_input = ihc_h_map if use_aligned else he_h_map
-        generated = self.generator(gen_input, uni_dropped, labels_dropped)
+        generated = self.generator(gen_input, uni_dropped, labels_dropped, e_maps=he_e_map)
 
         loss_g = torch.tensor(0.0, device=self.device)
         loss_lpips = torch.tensor(0.0, device=self.device)
@@ -649,13 +748,16 @@ class UNIStainNetTrainer(pl.LightningModule):
             self.log('train/l1_fullres', loss_l1_full, prog_bar=False)
             self.log('train/lpips_fullres', loss_lpips_full, prog_bar=False)
         else:
-            # Misalignment-aware losses
+            # Misalignment-aware losses.
+            # l1_lowres (64×64) is replaced by FFT spectral loss which is
+            # translation-invariant by construction: shifting an image does not
+            # change its frequency spectrum. This gives a genuine structural signal
+            # (sharpness, texture grain, stain density frequency) without penalising
+            # the 30px spatial shift between consecutive tissue sections.
             if self.hparams.l1_lowres_weight > 0:
-                gen_64 = F.interpolate(generated, size=64, mode='bilinear', align_corners=False)
-                tgt_64 = F.interpolate(ihc_rgb, size=64, mode='bilinear', align_corners=False)
-                loss_l1_lowres = F.l1_loss(gen_64, tgt_64)
-                loss_g = loss_g + self.hparams.l1_lowres_weight * loss_l1_lowres
-                self.log('train/l1_lowres', loss_l1_lowres, prog_bar=False)
+                loss_spectral = self.compute_edge_loss(generated, ihc_rgb)
+                loss_g = loss_g + self.hparams.l1_lowres_weight * loss_spectral
+                self.log('train/spectral_misalign', loss_spectral, prog_bar=False)
 
             lpips_main_size = self.hparams.image_size // 4
             gen_lpips = F.interpolate(generated, size=lpips_main_size, mode='bilinear', align_corners=False)
@@ -676,6 +778,18 @@ class UNIStainNetTrainer(pl.LightningModule):
             loss_dab = self.compute_dab_intensity_loss(generated, ihc_rgb)
             loss_g = loss_g + self.hparams.dab_intensity_weight * loss_dab
             self.log('train/dab_intensity', loss_dab, prog_bar=False)
+
+        # DAB histogram (Wasserstein-1): distribution shape, both cases
+        if self.hparams.dab_histo_weight > 0:
+            loss_dab_histo = self.compute_dab_histogram_loss(generated, ihc_rgb)
+            loss_g = loss_g + self.hparams.dab_histo_weight * loss_dab_histo
+            self.log('train/dab_histo', loss_dab_histo, prog_bar=False)
+
+        # DAB block: spatial DAB placement, Case A only
+        if self.hparams.dab_block_weight > 0 and use_aligned:
+            loss_dab_block = self.compute_dab_block_loss(generated, ihc_rgb)
+            loss_g = loss_g + self.hparams.dab_block_weight * loss_dab_block
+            self.log('train/dab_block', loss_dab_block, prog_bar=False)
 
         if self.hparams.dab_contrast_weight > 0:
             # Use labels_dropped: samples where class was CFG-dropped to null_class
@@ -701,6 +815,14 @@ class UNIStainNetTrainer(pl.LightningModule):
             loss_gram = self.compute_gram_style_loss(generated, ihc_rgb)
             loss_g = loss_g + self.hparams.gram_style_weight * loss_gram
             self.log('train/gram_style', loss_gram, prog_bar=False)
+
+        # IHC-to-IHC Sobel edge loss: Case A only, pixel-aligned.
+        # Forces generator to reproduce IHC membrane/boundary structure,
+        # not just pixel color. Complements LPIPS which is more holistic.
+        if self.hparams.ihc_edge_weight > 0 and use_aligned:
+            loss_ihc_edge = self.compute_he_edge_loss(generated, ihc_rgb)
+            loss_g = loss_g + self.hparams.ihc_edge_weight * loss_ihc_edge
+            self.log('train/ihc_edge', loss_ihc_edge, prog_bar=False)
 
         # H&E edge structure preservation — only in Case B (H&E H-map input).
         # In Case A the generator input is the IHC H-map, so comparing generated
@@ -730,10 +852,12 @@ class UNIStainNetTrainer(pl.LightningModule):
         loss_feat_match = torch.tensor(0.0, device=self.device)
         loss_crop_adv = torch.tensor(0.0, device=self.device)
         loss_uncond_adv = torch.tensor(0.0, device=self.device)
+        loss_proj_adv = torch.tensor(0.0, device=self.device)
         any_adv = (self.hparams.adversarial_weight > 0 or
                    self.hparams.uncond_disc_weight > 0 or
                    self.hparams.crop_disc_weight > 0 or
-                   self.hparams.feat_match_weight > 0)
+                   self.hparams.feat_match_weight > 0 or
+                   self.hparams.proj_disc_weight > 0)
         img_sz = self.hparams.image_size
         # Pre-compute disc-resolution tensors (512 for 1024 input, identity for 512)
         if img_sz == 1024:
@@ -751,9 +875,14 @@ class UNIStainNetTrainer(pl.LightningModule):
                 loss_adv = sum(hinge_loss_g(out) for out in disc_outputs) / len(disc_outputs)
                 loss_g = loss_g + self.hparams.adversarial_weight * loss_adv
 
-            # Feature matching from unconditional disc
+            # Feature matching from unconditional disc.
+            # Restricted to Case A (aligned) only. In Case B the discriminator's
+            # spatial features reflect the ~30px slice misalignment — the gradient
+            # tells the generator "your nuclei are in the wrong place," which it
+            # cannot fix. The model responds by diffusing the stain to cover both
+            # positions, producing the "light brown wash" / over-expressiveness.
             if (self.hparams.feat_match_weight > 0 and
-                    self.uncond_discriminator is not None):
+                    self.uncond_discriminator is not None and use_aligned):
                 _, fake_feats = self.uncond_discriminator(gen_for_disc, return_features=True)
                 with torch.no_grad():
                     _, real_feats = self.uncond_discriminator(ihc_for_disc, return_features=True)
@@ -769,10 +898,19 @@ class UNIStainNetTrainer(pl.LightningModule):
                 loss_crop_adv = hinge_loss_g(self.crop_discriminator(fake_crop))
                 loss_g = loss_g + self.hparams.crop_disc_weight * loss_crop_adv
 
-            # Unconditional discriminator: HER2-only adversarial
+            # Unconditional discriminator: alignment-free adversarial
             if self.uncond_discriminator is not None and self.hparams.uncond_disc_weight > 0:
                 loss_uncond_adv = hinge_loss_g(self.uncond_discriminator(gen_for_disc))
                 loss_g = loss_g + self.hparams.uncond_disc_weight * loss_uncond_adv
+
+            # Stain-conditioned projection discriminator.
+            # Uses labels_dropped so CFG-dropped samples (null_class) see the null embedding,
+            # which the discriminator associates with generic IHC realism.
+            # True stain labels (HER2/Ki67/ER/PR) activate stain-specific realism criteria.
+            if self.proj_discriminator is not None and self.hparams.proj_disc_weight > 0:
+                proj_out = self.proj_discriminator(gen_for_disc, labels_dropped)
+                loss_proj_adv = hinge_loss_g(proj_out)
+                loss_g = loss_g + self.hparams.proj_disc_weight * loss_proj_adv
 
         # Generator backward + step
         lr_scale = self._get_lr_scale()
@@ -793,9 +931,10 @@ class UNIStainNetTrainer(pl.LightningModule):
         loss_d = torch.tensor(0.0, device=self.device)
         loss_crop_d = torch.tensor(0.0, device=self.device)
         loss_uncond_d = torch.tensor(0.0, device=self.device)
+        loss_proj_d = torch.tensor(0.0, device=self.device)
         if self.global_step >= self.hparams.adversarial_start_step and any_adv:
             with torch.no_grad():
-                fake_detached = self.generator(gen_input, uni_dropped, labels_dropped)
+                fake_detached = self.generator(gen_input, uni_dropped, labels_dropped, e_maps=he_e_map)
 
             # For 1024, downsample for disc
             if img_sz == 1024:
@@ -833,6 +972,15 @@ class UNIStainNetTrainer(pl.LightningModule):
                 loss_uncond_d = hinge_loss_d(uncond_real_out, uncond_fake_out)
                 loss_d = loss_d + max(self.hparams.uncond_disc_weight, 1.0) * loss_uncond_d
 
+            # Stain-conditioned projection discriminator.
+            # Real images: (ihc_rgb, true_labels) — ground truth stain patterns.
+            # Fake images: (fake, labels_dropped) — same conditioning the generator used.
+            if self.proj_discriminator is not None and self.hparams.proj_disc_weight > 0:
+                proj_real_out = self.proj_discriminator(ihc_for_disc, labels)
+                proj_fake_out = self.proj_discriminator(fake_det_disc, labels_dropped)
+                loss_proj_d = hinge_loss_d(proj_real_out, proj_fake_out)
+                loss_d = loss_d + self.hparams.proj_disc_weight * loss_proj_d
+
             # R1 gradient penalty
             loss_r1 = torch.tensor(0.0, device=self.device)
             if self.global_step % self.hparams.r1_every == 0:
@@ -855,6 +1003,14 @@ class UNIStainNetTrainer(pl.LightningModule):
                             create_graph=True,
                         )[0]
                         loss_r1 = loss_r1 + self.hparams.r1_weight * grad_uncond.pow(2).mean()
+                    if self.proj_discriminator is not None and self.hparams.proj_disc_weight > 0:
+                        ihc_r1_proj = ihc_for_disc.float().detach().requires_grad_(True)
+                        d_real_proj = self.proj_discriminator(ihc_r1_proj, labels)
+                        grad_proj = torch.autograd.grad(
+                            outputs=d_real_proj.sum(), inputs=ihc_r1_proj,
+                            create_graph=True,
+                        )[0]
+                        loss_r1 = loss_r1 + self.hparams.r1_weight * grad_proj.pow(2).mean()
                 loss_d = loss_d + loss_r1
                 self.log('train/r1_penalty', loss_r1, prog_bar=False)
 
@@ -866,6 +1022,8 @@ class UNIStainNetTrainer(pl.LightningModule):
                 torch.nn.utils.clip_grad_norm_(self.crop_discriminator.parameters(), 1.0)
             if self.uncond_discriminator is not None:
                 torch.nn.utils.clip_grad_norm_(self.uncond_discriminator.parameters(), 1.0)
+            if self.proj_discriminator is not None:
+                torch.nn.utils.clip_grad_norm_(self.proj_discriminator.parameters(), 1.0)
             opt_d.step()
 
         # Logging
@@ -880,6 +1038,9 @@ class UNIStainNetTrainer(pl.LightningModule):
         if self.uncond_discriminator is not None:
             self.log('train/uncond_adv_g', loss_uncond_adv, prog_bar=False)
             self.log('train/uncond_adv_d', loss_uncond_d, prog_bar=False)
+        if self.proj_discriminator is not None:
+            self.log('train/proj_adv_g', loss_proj_adv, prog_bar=False)
+            self.log('train/proj_adv_d', loss_proj_d, prog_bar=False)
         if self.hparams.feat_match_weight > 0:
             self.log('train/feat_match', loss_feat_match, prog_bar=False)
 
@@ -909,7 +1070,7 @@ class UNIStainNetTrainer(pl.LightningModule):
             })
 
     def validation_step(self, batch, batch_idx):
-        he_rgb, ihc_rgb, he_h_map, ihc_h_map, labels, fnames = batch
+        he_rgb, ihc_rgb, he_h_map, ihc_h_map, he_e_map, labels, fnames = batch
 
         # On-the-fly UNI extraction
         if self._uni_extract_on_the_fly:
@@ -924,9 +1085,9 @@ class UNIStainNetTrainer(pl.LightningModule):
         if self.hparams.disable_class:
             labels = torch.full_like(labels, self.hparams.null_class)
 
-        # Use EMA generator
+        # Use EMA generator (always Case B: H&E H-map input at inference)
         with torch.no_grad():
-            generated = self.generator_ema(he_h_map, uni, labels)
+            generated = self.generator_ema(he_h_map, uni, labels, e_maps=he_e_map)
 
         # LPIPS (4x downsample: 128 for 512, 256 for 1024)
         lpips_size = self.hparams.image_size // 4
@@ -1000,7 +1161,7 @@ class UNIStainNetTrainer(pl.LightningModule):
         self._val_per_label_samples = {}
 
     @torch.no_grad()
-    def generate(self, he_h_maps, uni_features, labels,
+    def generate(self, he_h_maps, uni_features, labels, e_maps=None,
                  num_inference_steps=None, guidance_scale=1.0, seed=None):
         """Generate IHC images from H-map (Hematoxylin channel) input.
 
@@ -1019,13 +1180,13 @@ class UNIStainNetTrainer(pl.LightningModule):
         gen = self.generator_ema if hasattr(self, 'generator_ema') else self.generator
 
         if guidance_scale <= 1.0:
-            return gen(he_h_maps, uni_features, labels)
+            return gen(he_h_maps, uni_features, labels, e_maps=e_maps)
 
         # Classifier-free guidance
         null_labels = torch.full_like(labels, self.null_class)
 
-        output_cond = gen(he_h_maps, uni_features, labels)
-        output_uncond = gen(he_h_maps, uni_features, null_labels)
+        output_cond = gen(he_h_maps, uni_features, labels, e_maps=e_maps)
+        output_uncond = gen(he_h_maps, uni_features, null_labels, e_maps=e_maps)
 
         output = output_uncond + guidance_scale * (output_cond - output_uncond)
         return output.clamp(-1, 1)

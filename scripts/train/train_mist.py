@@ -37,6 +37,14 @@ def main():
                         help='Wandb run name')
     parser.add_argument('--resume_from', type=str, default=None,
                         help='Resume from checkpoint path')
+    parser.add_argument('--case_b_prob', type=float, default=0.25,
+                        help='Fraction of steps using H&E H-map (Case B / misaligned). '
+                             '0.25 = 75%% aligned, 0.5 = classic 50/50. '
+                             'Do not go below 0.20 (inference OOD risk).')
+    parser.add_argument('--use_eosin_encoder', action='store_true', default=True,
+                        help='Enable Eosin bottleneck injection (requires trainA-E / valA-E dirs). '
+                             'Disable with --no_use_eosin_encoder if E-map dirs are not available.')
+    parser.add_argument('--no_use_eosin_encoder', dest='use_eosin_encoder', action='store_false')
     args = parser.parse_args()
 
     print("=" * 70)
@@ -80,6 +88,12 @@ def main():
         feat_match_weight=10.0,
         patchnce_weight=0.0,
         bg_white_weight=0.0,
+        # New losses
+        ihc_edge_weight=0.1,        # IHC-to-IHC Sobel, Case A only
+        dab_histo_weight=0.3,       # Wasserstein-1 OD distribution, both cases
+        dab_block_weight=0.2,       # Block-level DAB spatial, Case A only
+        dab_block_size=32,          # 32px blocks → 16×16 = 256 blocks on 512 image
+        proj_disc_weight=1.0,       # Stain-conditioned projection discriminator
         # GAN training
         r1_weight=10.0,
         r1_every=16,
@@ -93,6 +107,12 @@ def main():
         # On-the-fly UNI extraction
         extract_uni_on_the_fly=True,
         uni_spatial_pool_size=32,
+        # Domain routing: 25% Case B (H&E H-map / misaligned) by default.
+        # Set via --case_b_prob. Do not go below 0.20.
+        case_b_prob=args.case_b_prob,
+        # Eosin bottleneck injection
+        use_eosin_encoder=args.use_eosin_encoder,
+        eosin_out_ch=64,
     )
 
     dm = MISTMultiStainCropDataModule(

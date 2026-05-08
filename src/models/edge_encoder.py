@@ -1,9 +1,13 @@
 """
 Edge encoders for UNIStainNet: parallel structure pathway from H-map edges.
 
-Both encoders accept [B, 1, 512, 512] Hematoxylin channel (H-map) in [-1, 1].
+Both edge encoders accept [B, 1, 512, 512] Hematoxylin channel (H-map) in [-1, 1].
 - EdgeEncoder (v1): Sobel → [gx, gy] (2ch) → sequential multi-scale CNN
 - MultiScaleEdgeEncoder (v2): Per-scale [h, gx, gy] (3ch) → independent CNNs at each resolution
+
+EosinEncoder: compresses [B, 1, 512, 512] Eosin (E-map) → [B, C, 16, 16] bottleneck features.
+Injected at the UNet bottleneck so the generator learns where cell membranes are.
+At 16×16 the ~30px physical misalignment between tissue sections is <1px — negligible.
 """
 
 import torch
@@ -182,3 +186,43 @@ class MultiScaleEdgeEncoder(nn.Module):
             64: self.scale_64(self._extract_edges_at_scale(h_map_01, 64)),
             32: self.scale_32(self._extract_edges_at_scale(h_map_01, 32)),
         }
+
+
+class EosinEncoder(nn.Module):
+    """Compress Eosin (E-map) from 512×512 → 16×16 for bottleneck injection.
+
+    The Eosin channel captures cell membranes, cytoplasm, and ECM — the spatial
+    blueprint that is absent from the Hematoxylin H-map. Injecting at 16×16 means
+    the ~30px physical misalignment between consecutive tissue sections becomes
+    <1px at this resolution, making the injection fully misalignment-safe.
+
+    Architecture: 5 strided-conv downsampling stages (512→256→128→64→32→16).
+    """
+
+    def __init__(self, out_channels=64):
+        super().__init__()
+        self.encoder = nn.Sequential(
+            nn.Conv2d(1, 32, 4, stride=2, padding=1),       # 512 → 256
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(32, 32, 4, stride=2, padding=1),       # 256 → 128
+            nn.InstanceNorm2d(32),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(32, 64, 4, stride=2, padding=1),       # 128 → 64
+            nn.InstanceNorm2d(64),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(64, 64, 4, stride=2, padding=1),       # 64 → 32
+            nn.InstanceNorm2d(64),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(64, out_channels, 4, stride=2, padding=1),  # 32 → 16
+            nn.InstanceNorm2d(out_channels),
+            nn.LeakyReLU(0.2, inplace=True),
+        )
+
+    def forward(self, e_map):
+        """
+        Args:
+            e_map: [B, 1, 512, 512] Eosin channel in [-1, 1]
+        Returns:
+            [B, out_channels, 16, 16]
+        """
+        return self.encoder(e_map)

@@ -11,9 +11,10 @@ def make_dummy_batch(batch_size=2, image_size=512, num_classes=5):
     ihc_rgb = torch.rand(batch_size, 3, image_size, image_size) * 2 - 1
     he_h_map = torch.rand(batch_size, 1, image_size, image_size) * 2 - 1
     ihc_h_map = torch.rand(batch_size, 1, image_size, image_size) * 2 - 1
+    he_e_map = torch.rand(batch_size, 1, image_size, image_size) * 2 - 1
     labels = torch.randint(0, num_classes - 1, (batch_size,), dtype=torch.long)
     fnames = [f"sample_{i}.png" for i in range(batch_size)]
-    return he_rgb, ihc_rgb, he_h_map, ihc_h_map, labels, fnames
+    return he_rgb, ihc_rgb, he_h_map, ihc_h_map, he_e_map, labels, fnames
 
 
 class DummyDataset(torch.utils.data.Dataset):
@@ -25,14 +26,15 @@ class DummyDataset(torch.utils.data.Dataset):
 
 
 def collate_dummy(batch):
-    he_rgb, ihc_rgb, he_h_map, ihc_h_map, labels, fnames = zip(*batch)
+    he_rgb, ihc_rgb, he_h_map, ihc_h_map, he_e_map, labels, fnames = zip(*batch)
     he_rgb = torch.cat(he_rgb, dim=0)
     ihc_rgb = torch.cat(ihc_rgb, dim=0)
     he_h_map = torch.cat(he_h_map, dim=0)
     ihc_h_map = torch.cat(ihc_h_map, dim=0)
+    he_e_map = torch.cat(he_e_map, dim=0)
     labels = torch.cat(labels, dim=0)
     fnames = [f[0] if isinstance(f, list) else f for f in fnames]
-    return he_rgb, ihc_rgb, he_h_map, ihc_h_map, labels, fnames
+    return he_rgb, ihc_rgb, he_h_map, ihc_h_map, he_e_map, labels, fnames
 
 
 class DummyDataModule(pl.LightningDataModule):
@@ -62,6 +64,8 @@ def main():
         image_size=512,
         extract_uni_on_the_fly=True,
         uni_spatial_pool_size=32,
+        use_eosin_encoder=True,
+        eosin_out_ch=64,
         # Disable extra losses/discriminators for a fast shape check
         adversarial_weight=0.0,
         uncond_disc_weight=0.0,
@@ -94,12 +98,13 @@ def main():
 
     # Inspect one batch shapes
     batch = next(iter(dm.train_dataloader()))
-    he_rgb, ihc_rgb, he_h_map, ihc_h_map, labels, fnames = batch
+    he_rgb, ihc_rgb, he_h_map, ihc_h_map, he_e_map, labels, fnames = batch
     print("Batch shapes:")
     print("  he_rgb:", tuple(he_rgb.shape))
     print("  ihc_rgb:", tuple(ihc_rgb.shape))
     print("  he_h_map:", tuple(he_h_map.shape))
     print("  ihc_h_map:", tuple(ihc_h_map.shape))
+    print("  he_e_map:", tuple(he_e_map.shape))
     print("  labels:", tuple(labels.shape), labels.dtype)
     print("  fnames:", fnames)
 

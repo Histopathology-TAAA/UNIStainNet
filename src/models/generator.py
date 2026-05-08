@@ -13,7 +13,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from src.models.blocks import CrossAttention, ResBlock, SelfAttention
-from src.models.edge_encoder import EdgeEncoder, MultiScaleEdgeEncoder
+from src.models.edge_encoder import EdgeEncoder, EosinEncoder, MultiScaleEdgeEncoder
 from src.models.uni_processor import UNIFeatureProcessor, UNIFeatureProcessorHighRes
 
 
@@ -27,7 +27,8 @@ class SPADEUNetGenerator(nn.Module):
 
     def __init__(self, num_classes=5, class_dim=64, uni_dim=1024,
                  input_skip=False, edge_encoder=False, edge_base_ch=32,
-                 uni_spatial_size=4, image_size=512, uni_spade_at_512=False):
+                 uni_spatial_size=4, image_size=512, uni_spade_at_512=False,
+                 use_eosin_encoder=False, eosin_out_ch=64):
         super().__init__()
         self.num_classes = num_classes
         self.class_dim = class_dim
@@ -50,6 +51,15 @@ class SPADEUNetGenerator(nn.Module):
             self.uni_processor = UNIFeatureProcessor(
                 uni_dim=uni_dim, base_channels=512,
             )
+
+        # Eosin bottleneck encoder: H&E E-map → [B, eosin_out_ch, 16, 16]
+        # Injected after bottleneck. Misalignment-safe: ~30px slice drift → <1px at 16×16.
+        if use_eosin_encoder:
+            self.eosin_encoder = EosinEncoder(out_channels=eosin_out_ch)
+            self.eosin_proj = nn.Conv2d(512 + eosin_out_ch, 512, 1)
+        else:
+            self.eosin_encoder = None
+            self.eosin_proj = None
 
         # Edge encoder (parallel structure pathway)
         # Note: edge encoder always operates at 512 resolution.
@@ -177,7 +187,7 @@ class SPADEUNetGenerator(nn.Module):
         e4 = self.enc4(e3)
         return {1: e1, 2: e2, 3: e3, 4: e4}
 
-    def forward(self, h_maps, uni_features, labels):
+    def forward(self, h_maps, uni_features, labels, e_maps=None):
         """
         Args:
             h_maps: [B, 1, H, H] in [-1, 1] where H=512 or H=1024
@@ -218,6 +228,11 @@ class SPADEUNetGenerator(nn.Module):
 
         # Bottleneck at 16×16
         x = self.bottleneck(e5)     # [B, 512, 16, 16]
+
+        # Eosin injection: membrane topology from H&E E-map
+        if self.eosin_encoder is not None and e_maps is not None:
+            e_feat = self.eosin_encoder(e_maps)           # [B, eosin_out_ch, 16, 16]
+            x = self.eosin_proj(torch.cat([x, e_feat], dim=1))  # [B, 512, 16, 16]
 
         # D5: upsample 16→32, skip from e4 + edge@32, UNI at 32
         x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
