@@ -6,12 +6,13 @@ Agent instructions for this repository.
 - Applies to the entire repository.
 - Keep changes focused and minimal. Do not refactor unrelated modules.
 - Active branch: `exp-destaining-v1-attention` — destaining variant is the main work.
+- **Current version: V3** (see [changes.md](changes.md) for full versioned changelog).
 
 ---
 
 ## First Read
 - Project overview, setup, dataset layout, and baseline commands: [README.md](README.md)
-- Architecture changelog (destaining refactor): [changes.md](changes.md)
+- Full versioned changelog (V0 → V3): [changes.md](changes.md)
 - Demo app entrypoint (Gradio/HF Space): [hf_space/app.py](hf_space/app.py)
 
 ---
@@ -36,11 +37,11 @@ The generator never sees raw RGB at training-time — only the H-map goes in. UN
 ### Core Model
 | File | Role |
 |------|------|
-| [src/models/generator.py](src/models/generator.py) | SPADEUNetGenerator — 1ch H-map encoder + CrossAttention decoder |
+| [src/models/generator.py](src/models/generator.py) | SPADEUNetGenerator — 1ch H-map encoder + CrossAttention decoder + Eosin injection |
 | [src/models/blocks.py](src/models/blocks.py) | CrossAttention, SelfAttention, ResBlock, SPADEBlock |
-| [src/models/edge_encoder.py](src/models/edge_encoder.py) | EdgeEncoder (v1) / MultiScaleEdgeEncoder (v2) — parallel structure pathway |
+| [src/models/edge_encoder.py](src/models/edge_encoder.py) | EdgeEncoder (v1) / MultiScaleEdgeEncoder (v2) — parallel structure pathway; **EosinEncoder** — 512→16 bottleneck compressor |
 | [src/models/uni_processor.py](src/models/uni_processor.py) | UNIFeatureProcessor / UNIFeatureProcessorHighRes — UNI token pipeline |
-| [src/models/discriminator.py](src/models/discriminator.py) | PatchGAN + MultiScaleDiscriminator + loss functions |
+| [src/models/discriminator.py](src/models/discriminator.py) | PatchGAN + MultiScaleDiscriminator + **ProjectionDiscriminator** (stain-conditioned) + loss functions |
 | [src/models/trainer.py](src/models/trainer.py) | UNIStainNetTrainer — Lightning GAN loop, all losses, CFG dropout, EMA |
 | [src/models/losses.py](src/models/losses.py) | VGG/Gram, PatchNCE |
 | [src/utils/dab.py](src/utils/dab.py) | DAB deconvolution for intensity/contrast losses |
@@ -64,16 +65,20 @@ The generator never sees raw RGB at training-time — only the H-map goes in. UN
 
 ## Training Logic (Key Design Decisions)
 
-### Mixed-Domain 50/50 Routing (trainer.py:625)
-Each batch randomly picks one of two modes:
+### Mixed-Domain Routing (configurable, default 75/25)
+Each batch randomly picks one of two modes. Split is controlled by `case_b_prob`
+(probability of Case B; default `0.25` — 75% aligned, 25% misaligned).
+Do NOT go below `case_b_prob=0.20` or the H&E H-map domain becomes OOD at inference.
 
 | Mode | Generator Input | Losses Applied |
 |------|----------------|----------------|
-| **Aligned (Case A)** | IHC H-map | Full-res L1 + full-res LPIPS vs IHC RGB |
-| **Misaligned (Case B)** | H&E H-map | L1 @ 64×64 + LPIPS @ 128 & 256 (tolerates slice misalignment) |
+| **Aligned (Case A)** — 75% | IHC H-map | Full-res L1 + full-res LPIPS + IHC Sobel edge + DAB block |
+| **Misaligned (Case B)** — 25% | H&E H-map | FFT spectral loss + LPIPS @ 128 & 256 + H&E Sobel edge |
+| **Both cases** | — | DAB intensity + DAB histogram (W1) + proj_disc adversarial + uncond_disc adversarial |
 
 UNI tokens are **always extracted from H&E RGB** regardless of mode.
-Validation **always** uses H&E H-map → IHC RGB.
+Eosin maps (`he_e_map`) are **always from H&E**, injected at the bottleneck in both cases.
+Validation **always** uses H&E H-map → IHC RGB (inference-time domain).
 
 ### CFG Dropout (trainer.py:331)
 | Dropped | Probability |
@@ -90,6 +95,31 @@ Discriminator losses are activated only after `adversarial_start_step=2000` step
 
 ---
 
+## Active Losses (V3 defaults in train_mist.py)
+
+| W&B key | Weight | Cases | What it penalizes |
+|---------|--------|-------|-------------------|
+| `train/l1_fullres` | 1.0 | A only | Pixel color error (full-res, aligned) |
+| `train/lpips_fullres` | 1.0 | A only | Perceptual error (full-res, aligned) |
+| `train/spectral_misalign` | 1.0 | B only | Wrong frequency content (FFT, translation-invariant) |
+| `train/lpips` | 1.0 | B only | Perceptual error @ 128px (tolerates 30px drift) |
+| `train/lpips_fine` | 0.5 | B only | Perceptual error @ 256px |
+| `train/ihc_edge` | 0.1 | A only | Wrong membrane/boundary structure vs real IHC Sobel |
+| `train/he_edge` | 0.5 | B only | Missing H&E nuclei structure in generated IHC |
+| `train/dab_intensity` | 0.2 | Both | Wrong top-10% DAB mean intensity |
+| `train/dab_histo` | 0.3 | Both | Wrong OD distribution shape (Wasserstein-1) |
+| `train/dab_block` | 0.2 | A only | Wrong spatial DAB placement (16×16 blocks) |
+| `train/feat_match` | 10.0 | A only | Texture statistics mismatch (disc intermediate features) |
+| `train/uncond_adv_g` | 1.0 | Both | Unconditional realism (after step 2000) |
+| `train/proj_adv_g` | 1.0 | Both | Stain-specific realism — HER2 membrane, Ki67/ER/PR nuclear (after step 2000) |
+
+**To disable any loss:** set its weight to `0.0` in `scripts/train/train_mist.py`. Most losses do
+not instantiate any module when set to 0 (the exception is `proj_disc_weight` which also
+controls discriminator instantiation — setting it to 0 prevents the discriminator from
+being created at all).
+
+---
+
 ## Dataset Layout (Destaining)
 
 ### Required Folder Structure
@@ -99,10 +129,12 @@ Discriminator losses are activated only after `adversarial_start_step=2000` step
   HER2/
     trainA/       ← H&E RGB images (paired)
     trainA-H/     ← H&E Hematoxylin channel (grayscale, same stems as trainA)
+    trainA-E/     ← H&E Eosin channel (grayscale) — loaded if present; zeros if absent
     trainB/       ← IHC RGB images (paired with trainA)
     trainB-H/     ← IHC Hematoxylin channel (grayscale, same stems as trainB)
     valA/
     valA-H/
+    valA-E/       ← Eosin channel for validation
     valB/
     valB-H/
   ER/
@@ -115,6 +147,7 @@ Discriminator losses are activated only after `adversarial_start_step=2000` step
 
 **Pairing is by filename stem (extension-agnostic).**
 A file `001.jpg` in `trainA/` pairs with `001.png` in `trainA-H/` as long as stems match.
+When `trainA-E/` exists, only stems present in all 5 directories (A, A-H, A-E, B, B-H) are used.
 
 ### Stain Label Mapping (STAIN_TO_LABEL in mist_dataset.py)
 | Folder name | Label |
@@ -128,8 +161,12 @@ A file `001.jpg` in `trainA/` pairs with `001.png` in `trainA-H/` as long as ste
 **Critical**: The downloaded zips extract as `HER2-Destained/`, `ER-Destained/`, etc.
 These must be renamed to `HER2/`, `ER/`, `Ki67/`, `PR/` — the launch script handles this automatically.
 
-### Extra Folders (Ignored by Current Code)
-`trainA-E` (Eosin channel), `trainB-DAB`, `valA-E`, `valB-DAB` — present in the zips but not loaded. Available for future loss extensions.
+### Batch Tuple (7-element, as of V2)
+`(he_rgb, ihc_rgb, he_h_map, ihc_h_map, he_e_map, stain_label, filename)`
+- `he_e_map`: `[B, 1, 512, 512]` in `[-1, 1]`. Zeros if `trainA-E/` does not exist.
+
+### Extra Folders (Not Loaded)
+`trainB-DAB`, `valB-DAB` — present in zips but not used.
 
 ---
 
@@ -186,15 +223,21 @@ The script: unzips → renames folders → verifies 8 subfolders per stain → i
 
 ### Manual Training Command
 ```bash
-cd /teamspace/studios/this_studio/UNIStainNet
+cd /teamspace/studios/this_studio/UNISTAINNET
 export PYTHONPATH=$PWD
 python scripts/train/train_mist.py \
-    --data_dir  /teamspace/studios/this_studio/data/MIST \
-    --stains    HER2 ER Ki67 PR \
+    --data_dir   /teamspace/studios/this_studio/data/MIST \
+    --stains     HER2 ER Ki67 PR \
     --batch_size 8 \
     --max_epochs 100 \
-    --ckpt_dir  /teamspace/studios/this_studio/checkpoints/destaining_v1 \
-    --wandb_name destaining_v1_attention
+    --ckpt_dir   /teamspace/studios/this_studio/checkpoints/destaining_v1 \
+    --wandb_name destaining_v1_attention_batch8
+
+# To disable Eosin injection (if trainA-E dirs are absent):
+#   add --no_use_eosin_encoder
+
+# To adjust domain split (default 0.25 = 75% aligned):
+#   add --case_b_prob 0.25
 ```
 
 ---
@@ -239,10 +282,14 @@ python scripts/eval/eval_mist.py --checkpoint checkpoints/destaining_v1/last.ckp
 
 - **Folder name mismatch**: Zips extract as `HER2-Destained/` but code expects `HER2/`. Launch script renames automatically; if running manually, do `mv HER2-Destained HER2`.
 - **HF access gate**: UNI model will fail to download without HF token + MahmoodLab/uni access approval.
-- **Misalignment tolerance**: H&E and IHC slices are consecutive cuts, not the same section. The 50/50 routing and downsampled losses in Case B handle this — do NOT add full-res pixel losses in the misaligned path.
-- **VRAM spikes**: The R1 gradient penalty (every 16 steps) temporarily allocates extra graph memory. If you're near the VRAM limit, reduce `r1_every` to 32 or disable R1.
+- **Misalignment tolerance**: H&E and IHC slices are consecutive cuts, not the same section. The 75/25 routing and alignment-free losses in Case B handle this — do NOT add full-res pixel losses or spatially-sensitive losses (block DAB, FM loss) in the misaligned path.
+- **Eosin dirs absent**: If `trainA-E/` does not exist, the dataset prints a warning and returns zero tensors for `he_e_map`. Training continues safely, but the EosinEncoder receives all-zero input. Either generate the E-maps or set `--no_use_eosin_encoder`.
+- **Empty discriminator optimizer**: When all disc weights are 0 (sanity-check mode), a dummy `nn.Parameter` is registered so the Adam optimizer doesn't crash with an empty parameter list. This is intentional — don't remove it.
+- **VRAM spikes**: The R1 gradient penalty (every 16 steps) temporarily allocates extra graph memory. If near VRAM limit, increase `r1_every` to 32 or set `r1_weight=0`.
+- **proj_disc R1 cost**: The `ProjectionDiscriminator` also gets its own R1 penalty. If VRAM is tight, disable proj_disc entirely with `proj_disc_weight=0.0`.
 - **num_workers on Lightning AI**: Default is 4. If you see `BrokenPipeError` in data loaders, set `num_workers=0` to debug.
 - **wandb offline mode**: If network is restricted, add `WANDB_MODE=offline` before the training command.
+- **DAB block loss at non-512 resolution**: `dab_block_size=32` assumes 512×512 input (gives 16×16 blocks). If you change `image_size`, adjust `dab_block_size` proportionally or set it to 0.
 
 ---
 
