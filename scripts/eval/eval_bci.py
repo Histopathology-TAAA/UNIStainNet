@@ -90,7 +90,7 @@ def extract_features_for_crop(uni_model, he_crop_01, spatial_pool_size=32):
         all_feats = uni_model.forward_features(all_crops)
         patch_tokens = all_feats[:, 1:, :]
         feat_dim = patch_tokens.shape[-1]
-        cls_token = all_feats[:, 0, :].reshape(B, 16, feat_dim).mean(dim=1).cpu()
+        cls_tokens = all_feats[:, 0, :].reshape(B, 16, feat_dim).cpu()
 
     # Reassemble spatial grid
     patch_tokens = patch_tokens.reshape(
@@ -107,7 +107,7 @@ def extract_features_for_crop(uni_model, he_crop_01, spatial_pool_size=32):
         result = full_grid
 
     S = result.shape[1]
-    return result.reshape(B, S * S, feat_dim).cpu(), cls_token
+    return result.reshape(B, S * S, feat_dim).cpu(), cls_tokens
 
 
 @torch.no_grad()
@@ -121,15 +121,15 @@ def generate_all(model, uni_model, dataloader, guidance_scale=1.0, seed=42,
         he, her2 = he.cuda().float(), her2.cuda().float()
         labels = labels.cuda().long()
 
-        # Extract UNI features and CLS token on-the-fly
+        # Extract UNI features and CLS token
         he_01 = ((he + 1) / 2).clamp(0, 1)
-        uni, cls_token = extract_features_for_crop(uni_model, he_01,
+        uni, cls_tokens = extract_features_for_crop(uni_model, he_01,
                                                    spatial_pool_size=spatial_pool_size)
         uni = uni.cuda()
-        cls_token = cls_token.cuda()
+        cls_tokens = cls_tokens.cuda()
 
         gen = model.generate(he, uni, labels,
-                             cls_token=cls_token,
+                             cls_tokens=cls_tokens,
                              guidance_scale=guidance_scale,
                              seed=seed + batch_idx)
 

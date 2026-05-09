@@ -95,7 +95,7 @@ def extract_features_for_crop(uni_model, he_crop_01, spatial_pool_size=32):
         all_feats = uni_model.forward_features(all_crops)
         patch_tokens = all_feats[:, -num_patches:, :]  # skip CLS + 8 register tokens
         feat_dim = patch_tokens.shape[-1]
-        cls_token = all_feats[:, 0, :].reshape(B, 16, feat_dim).mean(dim=1).cpu()
+        cls_tokens = all_feats[:, 0, :].reshape(B, 16, feat_dim).cpu()
 
     patch_tokens = patch_tokens.reshape(
         B, num_crops, num_crops, patches_per_side, patches_per_side, feat_dim
@@ -111,7 +111,7 @@ def extract_features_for_crop(uni_model, he_crop_01, spatial_pool_size=32):
         result = full_grid
 
     S = result.shape[1]
-    return result.reshape(B, S * S, feat_dim).cpu(), cls_token
+    return result.reshape(B, S * S, feat_dim).cpu(), cls_tokens
 
 
 @torch.no_grad()
@@ -129,13 +129,13 @@ def generate_for_stain(model, uni_model, dataloader, stain_label, guidance_scale
 
         # Extract UNI features and CLS token
         he_01 = ((he + 1) / 2).clamp(0, 1)
-        uni, cls_token = extract_features_for_crop(uni_model, he_01,
+        uni, cls_tokens = extract_features_for_crop(uni_model, he_01,
                                                    spatial_pool_size=spatial_pool_size)
         uni = uni.cuda()
-        cls_token = cls_token.cuda()
+        cls_tokens = cls_tokens.cuda()
 
         gen = model.generate(he, uni, stain_labels,
-                             cls_token=cls_token,
+                             cls_tokens=cls_tokens,
                              guidance_scale=guidance_scale,
                              seed=seed + batch_idx)
 

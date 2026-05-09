@@ -12,7 +12,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from src.models.blocks import SPADEBlock, ResBlock, SelfAttention
+from src.models.blocks import SPADEBlock, ResBlock, SelfAttention, CrossAttention
 from src.models.edge_encoder import EdgeEncoder, MultiScaleEdgeEncoder
 from src.models.uni_processor import UNIFeatureProcessor, UNIFeatureProcessorHighRes
 
@@ -116,6 +116,9 @@ class SPADEUNetGenerator(nn.Module):
             ResBlock(512),
         )
 
+        # Cross-Attention at bottleneck
+        self.cross_attn = CrossAttention(512, uni_dim)
+
         # AdaIN tissue conditioning: CLS token → per-channel scale/shift at bottleneck
         # Initialized to zero so training starts from identity (no tissue conditioning)
         self.adain_gamma = nn.Linear(uni_dim, 512)
@@ -205,13 +208,13 @@ class SPADEUNetGenerator(nn.Module):
         e4 = self.enc4(e3)
         return {1: e1, 2: e2, 3: e3, 4: e4}
 
-    def forward(self, he_images, uni_features, labels, cls_token=None):
+    def forward(self, he_images, uni_features, labels, cls_tokens=None):
         """
         Args:
             he_images:    [B, 3, H, H] in [-1, 1] where H=512 or H=1024
             uni_features: [B, N, feat_dim] spatial patch tokens
             labels:       [B] int class labels (0-4)
-            cls_token:    [B, feat_dim] global tissue summary from UNI CLS (optional)
+            cls_tokens:   [B, 16, feat_dim] sequence of CLS tokens (optional)
 
         Returns:
             output: [B, 3, H, H] in [-1, 1]
@@ -248,18 +251,25 @@ class SPADEUNetGenerator(nn.Module):
         # Bottleneck at 16×16
         x = self.bottleneck(e5)     # [B, 512, 16, 16]
 
-        # AdaIN tissue conditioning: inject global tissue context from CLS token
-        if cls_token is not None:
-            gamma = self.adain_gamma(cls_token).unsqueeze(-1).unsqueeze(-1)  # [B, 512, 1, 1]
-            beta  = self.adain_beta(cls_token).unsqueeze(-1).unsqueeze(-1)   #[B, 512, 1, 1]
+        if cls_tokens is not None:
+            # 1. Cross-Attention
+            x = self.cross_attn(x, cls_tokens)
+            
+            # 2. True AdaIN
+            global_cls = cls_tokens.mean(dim=1)
+            gamma = self.adain_gamma(global_cls).unsqueeze(-1).unsqueeze(-1)  # [B, 512, 1, 1]
+            beta  = self.adain_beta(global_cls).unsqueeze(-1).unsqueeze(-1)   #[B, 512, 1, 1]
+            x = F.instance_norm(x)
             x = x * (1 + gamma) + beta  # +1 ensures exact identity at init
+        else:
+            global_cls = None
 
         # D5: upsample 16→32, skip from e4 + edge@32, UNI at 32
         x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
         skip5 = [x, e4] + ([edge_maps[32]] if edge_maps else [])
         x = torch.cat(skip5, dim=1)
         x = self.dec5_conv(x)
-        x = self.dec5_spade(x, uni_maps[32], class_emb)
+        x = self.dec5_spade(x, uni_maps[32], class_emb, cls_emb=global_cls)
         x = self.dec5_act(x)
 
         # D4: upsample 32→64, skip from e3 + edge@64, UNI at 64
@@ -267,7 +277,7 @@ class SPADEUNetGenerator(nn.Module):
         skip4 = [x, e3] + ([edge_maps[64]] if edge_maps else [])
         x = torch.cat(skip4, dim=1)
         x = self.dec4_conv(x)
-        x = self.dec4_spade(x, uni_maps[64], class_emb)
+        x = self.dec4_spade(x, uni_maps[64], class_emb, cls_emb=global_cls)
         x = self.dec4_act(x)
 
         # D3: upsample 64→128, skip from e2 + edge@128, UNI at 128
@@ -275,7 +285,7 @@ class SPADEUNetGenerator(nn.Module):
         skip3 = [x, e2] + ([edge_maps[128]] if edge_maps else [])
         x = torch.cat(skip3, dim=1)
         x = self.dec3_conv(x)
-        x = self.dec3_spade(x, uni_maps[128], class_emb)
+        x = self.dec3_spade(x, uni_maps[128], class_emb, cls_emb=global_cls)
         x = self.dec3_act(x)
 
         # D2: upsample 128→256, skip from e1 + edge@256, UNI at 256
@@ -283,7 +293,7 @@ class SPADEUNetGenerator(nn.Module):
         skip2 = [x, e1] + ([edge_maps[256]] if edge_maps else [])
         x = torch.cat(skip2, dim=1)
         x = self.dec2_conv(x)
-        x = self.dec2_spade(x, uni_maps[256], class_emb)
+        x = self.dec2_spade(x, uni_maps[256], class_emb, cls_emb=global_cls)
         x = self.dec2_act(x)
 
         if self.image_size == 1024:
@@ -293,7 +303,7 @@ class SPADEUNetGenerator(nn.Module):
             x = torch.cat(skip1, dim=1)
             x = self.dec1_conv(x)
             if self.dec1_spade is not None:
-                x = self.dec1_spade(x, uni_maps[512], class_emb)
+                x = self.dec1_spade(x, uni_maps[512], class_emb, cls_emb=global_cls)
                 x = self.dec1_act(x)
             # [B, 64, 512, 512]
 

@@ -104,6 +104,7 @@ class UNIStainNetTrainer(pl.LightningModule):
         uni_spade_at_512=False,
         # Per-label names for multi-stain logging
         label_names=None,
+        uni_consistency_weight=0.1,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -291,8 +292,8 @@ class UNIStainNetTrainer(pl.LightningModule):
         patch_tokens = all_feats[:, -num_patches:, :] 
         feat_dim = patch_tokens.shape[-1]
 
-        # Extract CLS token
-        cls_token = all_feats[:, 0, :].reshape(B, 16, feat_dim).mean(dim=1)
+        # Extract CLS tokens (do not pool)
+        cls_tokens = all_feats[:, 0, :].reshape(B, 16, feat_dim)
 
         # Reshape back to per-sample grids
         patch_tokens = patch_tokens.reshape(
@@ -313,16 +314,16 @@ class UNIStainNetTrainer(pl.LightningModule):
             result = full_grid
 
         S = result.shape[1]
-        return result.reshape(B, S * S, feat_dim), cls_token
+        return result.reshape(B, S * S, feat_dim), cls_tokens
 
-    def _apply_cfg_dropout(self, labels, uni_features, cls_token=None):
+    def _apply_cfg_dropout(self, labels, uni_features, cls_tokens=None):
         """Apply classifier-free guidance dropout during training (vectorized)."""
         B = labels.shape[0]
         device = labels.device
 
         new_labels = labels.clone()
         new_uni = uni_features.clone()
-        new_cls = cls_token.clone() if cls_token is not None else None
+        new_cls = cls_tokens.clone() if cls_tokens is not None else None
 
         r = torch.rand(B, device=device)
         p_both = self.hparams.cfg_drop_both_prob
@@ -587,18 +588,49 @@ class UNIStainNetTrainer(pl.LightningModule):
 
             return loss / len(gen_feats)
 
+    def compute_uni_consistency_loss(self, generated, real_ihc):
+        import torchvision.transforms.functional as TF
+        import torchvision.transforms as transforms
+        
+        # Random crop 224x224
+        H, W = generated.shape[2:]
+        if H >= 224 and W >= 224:
+            i, j, h, w = transforms.RandomCrop.get_params(generated, output_size=(224, 224))
+            gen_crop = TF.crop(generated, i, j, h, w)
+            real_crop = TF.crop(real_ihc, i, j, h, w)
+        else:
+            gen_crop = F.interpolate(generated, size=224, mode='bilinear')
+            real_crop = F.interpolate(real_ihc, size=224, mode='bilinear')
+            
+        # UNI normalize
+        mean = torch.tensor([0.485, 0.456, 0.406], device=self.device).view(1, 3, 1, 1)
+        std  = torch.tensor([0.229, 0.224, 0.225], device=self.device).view(1, 3, 1, 1)
+        
+        gen_crop = ((gen_crop + 1) / 2).clamp(0, 1)
+        gen_crop = (gen_crop - mean) / std
+        
+        real_crop = ((real_crop + 1) / 2).clamp(0, 1)
+        real_crop = (real_crop - mean) / std
+        
+        uni_model = self._load_uni_model()
+        with torch.no_grad():
+            real_cls = uni_model.forward_features(real_crop)[:, 0, :]
+            
+        gen_cls = uni_model.forward_features(gen_crop)[:, 0, :]
+        return 1.0 - F.cosine_similarity(gen_cls, real_cls).mean()
+
     def training_step(self, batch, batch_idx):
         he, her2, uni_or_crops, labels, fnames = batch
         opt_g, opt_d = self.optimizers()
 
         # On-the-fly UNI extraction: dataset returns [B, 16, 3, 224, 224] sub-crops
         if self._uni_extract_on_the_fly:
-            uni, cls_token = self._extract_uni_from_sub_crops(uni_or_crops)
+            uni, cls_tokens = self._extract_uni_from_sub_crops(uni_or_crops)
         else:
-            uni, cls_token = uni_or_crops, None
+            uni, cls_tokens = uni_or_crops, None
 
         # Apply CFG dropout (also drops cls_token when UNI is dropped)
-        labels_dropped, uni_dropped, cls_dropped = self._apply_cfg_dropout(labels, uni, cls_token)
+        labels_dropped, uni_dropped, cls_dropped = self._apply_cfg_dropout(labels, uni, cls_tokens)
 
         # Ablation: zero out UNI features
         if self.hparams.disable_uni:
@@ -613,7 +645,7 @@ class UNIStainNetTrainer(pl.LightningModule):
         # ----------------------------------------------------------------
         # Generator step
         # ----------------------------------------------------------------
-        generated = self.generator(he, uni_dropped, labels_dropped, cls_token=cls_dropped)
+        generated = self.generator(he, uni_dropped, labels_dropped, cls_tokens=cls_dropped)
 
         # LPIPS main: 4x downsample (128 for 512 input, 256 for 1024)
         lpips_main_size = self.hparams.image_size // 4
@@ -674,6 +706,12 @@ class UNIStainNetTrainer(pl.LightningModule):
             loss_gram = self.compute_gram_style_loss(generated, her2)
             loss_g = loss_g + self.hparams.gram_style_weight * loss_gram
             self.log('train/gram_style', loss_gram, prog_bar=False)
+
+        # UNI embedding consistency: generated IHC CLS ≈ real IHC CLS
+        if self.hparams.uni_consistency_weight > 0:
+            loss_uni_cons = self.compute_uni_consistency_loss(generated, her2)
+            loss_g = loss_g + self.hparams.uni_consistency_weight * loss_uni_cons
+            self.log('train/uni_consistency', loss_uni_cons, prog_bar=False)
 
         # H&E edge structure preservation (pixel-aligned)
         if self.hparams.he_edge_weight > 0:
@@ -894,21 +932,21 @@ class UNIStainNetTrainer(pl.LightningModule):
 
         # On-the-fly UNI extraction
         if self._uni_extract_on_the_fly:
-            uni, cls_token = self._extract_uni_from_sub_crops(uni_or_crops)
+            uni, cls_tokens = self._extract_uni_from_sub_crops(uni_or_crops)
         else:
-            uni, cls_token = uni_or_crops, None
+            uni, cls_tokens = uni_or_crops, None
 
         if self.hparams.disable_uni:
             uni = torch.zeros_like(uni)
-            if cls_token is not None:
-                cls_token = torch.zeros_like(cls_token)
+            if cls_tokens is not None:
+                cls_tokens = torch.zeros_like(cls_tokens)
 
         if self.hparams.disable_class:
             labels = torch.full_like(labels, self.hparams.null_class)
 
         # Use EMA generator
         with torch.no_grad():
-            generated = self.generator_ema(he, uni, labels, cls_token=cls_token)
+            generated = self.generator_ema(he, uni, labels, cls_tokens=cls_tokens)
 
         # LPIPS (4x downsample: 128 for 512, 256 for 1024)
         lpips_size = self.hparams.image_size // 4
@@ -950,7 +988,7 @@ class UNIStainNetTrainer(pl.LightningModule):
                 if lbl not in self._val_per_label_samples:
                     self._val_per_label_samples[lbl] = {'he': [], 'real': [], 'gen': []}
                 bucket = self._val_per_label_samples[lbl]
-                if len(bucket['he']) < 4:
+                if len(bucket['he']) < 16:
                     bucket['he'].append(he[i].cpu())
                     bucket['real'].append(her2_01[i].cpu())
                     bucket['gen'].append(gen_01[i].cpu())
@@ -983,14 +1021,14 @@ class UNIStainNetTrainer(pl.LightningModule):
 
     @torch.no_grad()
     def generate(self, he_images, uni_features, labels,
-                 cls_token=None, num_inference_steps=None, guidance_scale=1.0, seed=None):
+                 cls_tokens=None, num_inference_steps=None, guidance_scale=1.0, seed=None):
         """Generate IHC images from H&E input.
 
         Args:
             he_images:    [B, 3, H, H] where H=512 or H=1024
             uni_features: [B, N, feat_dim] spatial patch tokens
             labels:       [B] class/stain labels
-            cls_token:    [B, feat_dim] global tissue CLS token (optional)
+            cls_tokens:   [B, 16, feat_dim] global tissue CLS tokens (optional)
             num_inference_steps: ignored (single forward pass)
             guidance_scale: CFG scale (1.0 = no guidance)
             seed: random seed (for reproducibility, though model is deterministic)
@@ -1001,13 +1039,13 @@ class UNIStainNetTrainer(pl.LightningModule):
         gen = self.generator_ema if hasattr(self, 'generator_ema') else self.generator
 
         if guidance_scale <= 1.0:
-            return gen(he_images, uni_features, labels, cls_token=cls_token)
+            return gen(he_images, uni_features, labels, cls_tokens=cls_tokens)
 
         # Classifier-free guidance
         null_labels = torch.full_like(labels, self.null_class)
 
-        output_cond   = gen(he_images, uni_features, labels,      cls_token=cls_token)
-        output_uncond = gen(he_images, uni_features, null_labels,  cls_token=None)
+        output_cond   = gen(he_images, uni_features, labels,      cls_tokens=cls_tokens)
+        output_uncond = gen(he_images, uni_features, null_labels,  cls_tokens=None)
 
         output = output_uncond + guidance_scale * (output_cond - output_uncond)
         return output.clamp(-1, 1)
