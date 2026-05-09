@@ -140,14 +140,15 @@ echo "========================================================"
 
 # to continue training on a checkpoint use this script
 
-# python scripts/train/train_mist.py \
-#     --data_dir   "$HOME/data/MIST" \
-#     --stains     HER2 ER Ki67 PR \
-#     --batch_size 8 \
-#     --max_epochs 100 \
-#     --ckpt_dir   "$HOME/checkpoints/destaining_v1" \
-#     --wandb_name destaining_v1_attention_batch8 \
-#     --resume_from "$HOME/checkpoints/destaining_v1/last.ckpt"
+python scripts/train/train_mist.py \
+    --data_dir   "$HOME/data/MIST" \
+    --stains     HER2 ER Ki67 PR \
+    --batch_size 8 \
+    --max_epochs 100 \
+    --ckpt_dir   "$HOME/checkpoints/destaining_v2" \
+    --wandb_name destaining_v2_attention_batch8 \
+    --resume_from "$HOME/checkpoints/destaining_v2/last.ckpt"
 
 # To upload a model to hf
-# hf upload asserelzeki/destained_v1_UNIStainnet_v1 ./checkpoints/destaining_v1/mist_epoch=019_step=084481.ckpt
+# hf upload asserelzeki/destained_v1_UNIStainnet_v2 ./checkpoints/destaining_v2/mist_epoch=002_step=010973.ckpt
+# hf upload asserelzeki/destained_UNIStainnet_v2 ./checkpoints/destaining_v2/mist_epoch=002_step=010973.ckpt
