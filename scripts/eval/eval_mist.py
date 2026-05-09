@@ -45,11 +45,16 @@ from src.utils.metrics import (
 
 
 def load_uni_model():
-    """Load UNI ViT-L/16 for on-the-fly feature extraction during eval."""
-    model = timm.create_model("hf-hub:MahmoodLab/uni2-h", pretrained=True,
-                               init_values=1e-5, dynamic_img_size=True)
-    model = model.cuda().eval()
-    return model
+    """Load UNI-2-h for on-the-fly feature extraction during eval."""
+    timm_kwargs = {
+        'img_size': 224, 'patch_size': 14, 'depth': 24, 'num_heads': 24,
+        'init_values': 1e-5, 'embed_dim': 1536, 'mlp_ratio': 2.66667 * 2,
+        'num_classes': 0, 'no_embed_class': True,
+        'mlp_layer': timm.layers.SwiGLUPacked, 'act_layer': torch.nn.SiLU,
+        'reg_tokens': 8, 'dynamic_img_size': True,
+    }
+    model = timm.create_model("hf-hub:MahmoodLab/UNI2-h", pretrained=True, **timm_kwargs)
+    return model.cuda().eval()
 
 
 def extract_features_for_crop(uni_model, he_crop_01, spatial_pool_size=32):
@@ -61,7 +66,18 @@ def extract_features_for_crop(uni_model, he_crop_01, spatial_pool_size=32):
 
     B = he_crop_01.shape[0]
     num_crops = 4
-    patches_per_side = 14
+    patch_size = uni_model.patch_embed.patch_size[0]
+    """Extract UNI features from a 512x512 H&E crop."""
+    uni_transform = transforms.Compose([
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                             std=[0.229, 0.224, 0.225]),
+    ])
+
+    B = he_crop_01.shape[0]
+    num_crops = 4
+    patch_size = uni_model.patch_embed.patch_size[0]
+    patches_per_side = 224 // patch_size
+    num_patches = patches_per_side ** 2
 
     sub_crops = []
     crop_h = he_crop_01.shape[2] // num_crops
@@ -77,7 +93,7 @@ def extract_features_for_crop(uni_model, he_crop_01, spatial_pool_size=32):
 
     with torch.no_grad():
         all_feats = uni_model.forward_features(all_crops)
-        patch_tokens = all_feats[:, 1:, :]
+        patch_tokens = all_feats[:, -num_patches:, :]  # skip CLS + 8 register tokens
         feat_dim = patch_tokens.shape[-1]
         cls_token = all_feats[:, 0, :].reshape(B, 16, feat_dim).mean(dim=1).cpu()
 

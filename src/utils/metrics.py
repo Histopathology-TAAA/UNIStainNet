@@ -160,9 +160,15 @@ def compute_uni_fid(generated, real):
     import timm
     import torchvision.transforms as transforms
     from scipy.linalg import sqrtm
+    
+    uni_model = timm.create_model("hf-hub:MahmoodLab/UNI2-h", pretrained=True,
+                                   img_size=224, patch_size=14, depth=24, num_heads=24,
+                                   init_values=1e-5, embed_dim=1536, mlp_ratio=2.66667*2,
+                                   num_classes=0, no_embed_class=True,
+                                  mlp_layer=timm.layers.SwiGLUPacked,
+                                   act_layer=torch.nn.SiLU,
+                                   reg_tokens=8, dynamic_img_size=True)
 
-    uni_model = timm.create_model("hf-hub:MahmoodLab/uni2-h", pretrained=True,
-                                   init_values=1e-5, dynamic_img_size=True)
     uni_model = uni_model.cuda().eval()
 
     transform = transforms.Compose([
@@ -401,8 +407,14 @@ def compute_downstream_metrics(generated, real, labels, train_ihc_dir):
 
     # Load UNI model
     print("  Loading UNI model for downstream evaluation...")
-    uni_model = timm.create_model("hf-hub:MahmoodLab/uni2-h", pretrained=True,
-                                   init_values=1e-5, dynamic_img_size=True)
+    uni_model = timm.create_model("hf-hub:MahmoodLab/UNI2-h", pretrained=True,
+                                   img_size=224, patch_size=14, depth=24, num_heads=24,
+                                   init_values=1e-5, embed_dim=1536, mlp_ratio=2.66667*2,
+                                   num_classes=0, no_embed_class=True,
+                                   mlp_layer=timm.layers.SwiGLUPacked,
+                                   act_layer=torch.nn.SiLU,
+                                   reg_tokens=8, dynamic_img_size=True)
+
     uni_model = uni_model.cuda().eval()
 
     uni_transform = transforms.Compose([
