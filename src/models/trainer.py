@@ -911,7 +911,7 @@ class UNIStainNetTrainer(pl.LightningModule):
 
     def _log_sample_grid(self, he, her2_01, gen_01, key):
         """Log H&E | Real | Gen grid to wandb."""
-        n = min(4, len(he))
+        n = min(16, len(he))
         he_01 = ((he[:n].cpu() + 1) / 2).clamp(0, 1)
         grid_images = []
         for i in range(n):
