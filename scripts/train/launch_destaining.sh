@@ -15,9 +15,18 @@
 set -e   # stop immediately on any error
 
 STUDIO_ROOT="$HOME"  # on Lightning AI this is /teamspace/studios/this_studio
-REPO_DIR="$STUDIO_ROOT/UNISTAINNET"
+REPO_DIR="$STUDIO_ROOT/UNIStainNet"
 ZIP_DIR="$STUDIO_ROOT/Destained_Results"
 DATA_DIR="$STUDIO_ROOT/data/MIST"
+
+# echo "========================================================"
+# echo "  Step 0: Install the dataset from Hugging face"
+# echo "========================================================"
+
+# mkdir $ZIP_DIR
+# cd $ZIP_DIR
+# hf download asserelzeki/destained-histopathology-data --repo-type dataset --local-dir .
+# cd $REPO_DIR
 
 echo "========================================================"
 echo "  Step 1: Unzip and rename stain folders"
@@ -68,36 +77,36 @@ for STAIN in HER2 ER Ki67 PR; do
     echo "  [OK] $STAIN — all 8 subfolders present"
 done
 
-echo ""
-echo "========================================================"
-echo "  Step 3: Install dependencies"
-echo "========================================================"
+# echo ""
+# echo "========================================================"
+# echo "  Step 3: Install dependencies"
+# echo "========================================================"
 
-cd "$REPO_DIR"
-pip install -r requirements.txt -q
-pip install -e . -q
-echo "  Dependencies installed."
+# cd "$REPO_DIR"
+# pip install -r requirements.txt -q
+# pip install -e . -q
+# echo "  Dependencies installed."
 
-echo ""
-echo "========================================================"
-echo "  Step 4: CPU sanity check (no GPU, no UNI download)"
-echo "========================================================"
+# echo ""
+# echo "========================================================"
+# echo "  Step 4: CPU sanity check (no GPU, no UNI download)"
+# echo "========================================================"
 
-export PYTHONPATH="$REPO_DIR"
-python scripts/debug/sanity_check_mist_dummy.py
-echo "  Architecture sanity check passed."
+# export PYTHONPATH="$REPO_DIR"
+# python scripts/debug/sanity_check_mist_dummy.py
+# echo "  Architecture sanity check passed."
 
-echo ""
-echo "========================================================"
-echo "  Step 5: Real data loading check (CPU, no model)"
-echo "========================================================"
+# echo ""
+# echo "========================================================"
+# echo "  Step 5: Real data loading check (CPU, no model)"
+# echo "========================================================"
 
-python scripts/debug/validate_data.py \
-    --data_dir "$DATA_DIR" \
-    --stains HER2 ER Ki67 PR \
-    --batch_size 4 \
-    --n_batches 3
-echo "  Data loading check passed."
+# python scripts/debug/validate_data.py \
+#     --data_dir "$DATA_DIR" \
+#     --stains HER2 ER Ki67 PR \
+#     --batch_size 4 \
+#     --n_batches 3
+# echo "  Data loading check passed."
 
 echo ""
 echo "========================================================"
@@ -108,13 +117,13 @@ echo "========================================================"
 #   A100  40GB  → 8       ← recommended starting point
 #   A100  80GB  → 12–16
 
-python scripts/train/train_mist.py \
-    --data_dir   "$DATA_DIR" \
-    --stains     HER2 ER Ki67 PR \
-    --batch_size 8 \
-    --max_epochs 100 \
-    --ckpt_dir   "$STUDIO_ROOT/checkpoints/destaining_v1" \
-    --wandb_name destaining_v1_attention_batch8
+# python scripts/train/train_mist.py \
+#     --data_dir   "$DATA_DIR" \
+#     --stains     HER2 ER Ki67 PR \
+#     --batch_size 8 \
+#     --max_epochs 100 \
+#     --ckpt_dir   "$STUDIO_ROOT/checkpoints/destaining_v1" \
+#     --wandb_name destaining_v1_attention_batch8
 
 # For copy and paste command running uncomment, copy, and use this code 
 
@@ -123,8 +132,22 @@ python scripts/train/train_mist.py \
 #     --stains     HER2 ER Ki67 PR \
 #     --batch_size 8 \
 #     --max_epochs 100 \
-#     --ckpt_dir   "$HOME/checkpoints/destaining_v1" \
-#     --wandb_name destaining_v1_attention_batch8
+#     --ckpt_dir   "$HOME/checkpoints/destaining_v2" \
+#     --wandb_name destaining_v2_attention_batch8
 
 
 # change the wandb name if needed to log 
+
+# to continue training on a checkpoint use this script
+
+# python scripts/train/train_mist.py \
+#     --data_dir   "$HOME/data/MIST" \
+#     --stains     HER2 ER Ki67 PR \
+#     --batch_size 8 \
+#     --max_epochs 100 \
+#     --ckpt_dir   "$HOME/checkpoints/destaining_v1" \
+#     --wandb_name destaining_v1_attention_batch8 \
+#     --resume_from "$HOME/checkpoints/destaining_v1/last.ckpt"
+
+# To upload a model to hf
+# hf upload asserelzeki/destained_v1_UNIStainnet_v1 ./checkpoints/destaining_v1/mist_epoch=019_step=084481.ckpt
