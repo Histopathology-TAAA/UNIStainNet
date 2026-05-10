@@ -93,6 +93,16 @@ BCI_dataset/
 
 Images are paired by filename. HER2 class labels (0, 1+, 2+, 3+) are inferred from filename prefixes.
 
+### ACROBAT Dataset
+
+Download the ACROBAT [pipeline_test.h5](https://www.kaggle.com/datasets/ahmedayman4a/acrobat-breast-patches) HDF5 file containing pre-extracted, VALIS-registered H&E–IHC patch pairs. No manual organization is needed — the file is self-contained:
+
+```
+pipeline_test.h5        # HDF5 with he/er/pgr/her2/ki67 datasets + index groups
+```
+
+The file contains 1024×1024 px patch pairs at 0.92 µm/px (10X) from 11 patients. Pair arrays in `index/pair_{stain}` are sparse — not every H&E patch has a counterpart for every stain. The DataModule splits by patient ID so patches from the same patient never leak across splits.
+
 ### MIST Dataset
 
 Download from [MIST](https://doi.org/10.5281/zenodo.4751737) and organize as:
@@ -141,6 +151,43 @@ python scripts/train/train_mist.py \
     --stains HER2 Ki67
 ```
 
+### ACROBAT (multi-stain, unified model)
+
+512×512 crops:
+
+```bash
+python scripts/train/train_acrobat.py \
+    --h5_path /path/to/pipeline_test.h5 \
+    --batch_size 16 \
+    --max_epochs 100
+```
+
+Native 1024×1024:
+
+```bash
+python scripts/train/train_acrobat_1024.py \
+    --h5_path /path/to/pipeline_test.h5 \
+    --batch_size 8 \
+    --max_epochs 100
+```
+
+Train on a subset of stains:
+
+```bash
+python scripts/train/train_acrobat.py \
+    --h5_path /path/to/pipeline_test.h5 \
+    --stains HER2 KI67
+```
+
+Custom patient split:
+
+```bash
+python scripts/train/train_acrobat.py \
+    --h5_path /path/to/pipeline_test.h5 \
+    --train_patients 0 1 10 100 102 105 106 107 \
+    --val_patients 101 103 104
+```
+
 ## Evaluation
 
 ### BCI
@@ -166,6 +213,34 @@ python scripts/eval/eval_mist.py \
     --checkpoint checkpoints/mist_multistain/last.ckpt \
     --data_dir /path/to/MIST \
     --stains HER2 Ki67
+```
+
+### ACROBAT
+
+512×512 crops:
+
+```bash
+python scripts/eval/eval_acrobat.py \
+    --checkpoint checkpoints/acrobat_512/last.ckpt \
+    --h5_path /path/to/pipeline_test.h5
+```
+
+Native 1024×1024:
+
+```bash
+python scripts/eval/eval_acrobat_1024.py \
+    --checkpoint checkpoints/acrobat_1024/last.ckpt \
+    --h5_path /path/to/pipeline_test.h5
+```
+
+Evaluate specific stains and patients:
+
+```bash
+python scripts/eval/eval_acrobat.py \
+    --checkpoint checkpoints/acrobat_512/last.ckpt \
+    --h5_path /path/to/pipeline_test.h5 \
+    --stains HER2 KI67 \
+    --eval_patients 0 101 103
 ```
 
 ## Architecture
@@ -206,7 +281,8 @@ python scripts/eval/eval_mist.py \
 │   │   └── losses.py            # Perceptual, adversarial, DAB losses
 │   ├── data/
 │   │   ├── bci_dataset.py       # BCI dataset loader
-│   │   └── mist_dataset.py      # MIST multi-stain dataset loader
+│   │   ├── mist_dataset.py      # MIST multi-stain dataset loader
+│   │   └── acrobat_dataset.py   # ACROBAT HDF5 multi-stain dataset loader
 │   └── utils/
 │       ├── dab.py               # DAB color deconvolution
 │       └── metrics.py           # Evaluation metrics (FID, KID, LPIPS, DAB, IOD)
