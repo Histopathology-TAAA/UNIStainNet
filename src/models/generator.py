@@ -28,7 +28,7 @@ class SPADEUNetGenerator(nn.Module):
     def __init__(self, num_classes=5, class_dim=64, uni_dim=1024,
                  input_skip=False, edge_encoder=False, edge_base_ch=32,
                  uni_spatial_size=4, image_size=512, uni_spade_at_512=False,
-                 use_eosin_encoder=False, eosin_out_ch=64):
+                 use_eosin_encoder=False, eosin_out_ch=64, eosin_multi_scale=False):
         super().__init__()
         self.num_classes = num_classes
         self.class_dim = class_dim
@@ -37,6 +37,7 @@ class SPADEUNetGenerator(nn.Module):
         self.uni_spatial_size = uni_spatial_size
         self.image_size = image_size
         self.uni_spade_at_512 = uni_spade_at_512
+        self.eosin_multi_scale = eosin_multi_scale
 
         # Class embedding (kept for compatibility, currently unused)
         self.class_embed = nn.Embedding(num_classes, class_dim)
@@ -54,12 +55,26 @@ class SPADEUNetGenerator(nn.Module):
 
         # Eosin bottleneck encoder: H&E E-map → [B, eosin_out_ch, 16, 16]
         # Injected after bottleneck. Misalignment-safe: ~30px slice drift → <1px at 16×16.
+        #
+        # eosin_multi_scale=True (Option B — new runs only):
+        #   Also injects Eosin 32×32 features at decoder level D5 (after first upsample).
+        #   At 32×32 the 30px misalignment is ~1px — still safely negligible.
+        #   Gives the decoder a finer membrane signal than the bottleneck alone.
+        #   Enable via --eosin_multi_scale. Incompatible with checkpoints trained
+        #   without it (state_dict keys differ). Default: False.
         if use_eosin_encoder:
-            self.eosin_encoder = EosinEncoder(out_channels=eosin_out_ch)
+            self.eosin_encoder = EosinEncoder(out_channels=eosin_out_ch,
+                                              multi_scale=eosin_multi_scale)
             self.eosin_proj = nn.Conv2d(512 + eosin_out_ch, 512, 1)
+            if eosin_multi_scale:
+                # stage4 always outputs 64ch regardless of eosin_out_ch
+                self.eosin_proj_32 = nn.Conv2d(512 + 64, 512, 1)
+            else:
+                self.eosin_proj_32 = None
         else:
             self.eosin_encoder = None
             self.eosin_proj = None
+            self.eosin_proj_32 = None
 
         # Edge encoder (parallel structure pathway)
         # Note: edge encoder always operates at 512 resolution.
@@ -229,10 +244,15 @@ class SPADEUNetGenerator(nn.Module):
         # Bottleneck at 16×16
         x = self.bottleneck(e5)     # [B, 512, 16, 16]
 
-        # Eosin injection: membrane topology from H&E E-map
+        # Eosin injection at bottleneck (16×16): membrane topology from H&E E-map
+        e_feat_32 = None
         if self.eosin_encoder is not None and e_maps is not None:
-            e_feat = self.eosin_encoder(e_maps)           # [B, eosin_out_ch, 16, 16]
-            x = self.eosin_proj(torch.cat([x, e_feat], dim=1))  # [B, 512, 16, 16]
+            eosin_out = self.eosin_encoder(e_maps)
+            if self.eosin_multi_scale:
+                e_feat_16, e_feat_32 = eosin_out   # [B, out_ch, 16, 16], [B, 64, 32, 32]
+            else:
+                e_feat_16 = eosin_out               # [B, out_ch, 16, 16]
+            x = self.eosin_proj(torch.cat([x, e_feat_16], dim=1))  # [B, 512, 16, 16]
 
         # D5: upsample 16→32, skip from e4 + edge@32, UNI at 32
         x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
@@ -241,6 +261,12 @@ class SPADEUNetGenerator(nn.Module):
         x = self.dec5_conv(x)
         x = self.dec5_attn(x, uni_features)
         x = self.dec5_act(x)
+
+        # Eosin injection at D5 (32×32) — Option B, only when eosin_multi_scale=True.
+        # At 32×32 the 30px misalignment is <2px — still negligible.
+        # Gives decoder a finer membrane signal one level above the bottleneck.
+        if self.eosin_proj_32 is not None and e_feat_32 is not None:
+            x = self.eosin_proj_32(torch.cat([x, e_feat_32], dim=1))  # [B, 512, 32, 32]
 
         # D4: upsample 32→64, skip from e3 + edge@64, UNI at 64
         x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)

@@ -189,40 +189,91 @@ class MultiScaleEdgeEncoder(nn.Module):
 
 
 class EosinEncoder(nn.Module):
-    """Compress Eosin (E-map) from 512×512 → 16×16 for bottleneck injection.
+    """Compress Eosin (E-map) 512→16 for bottleneck injection.
 
     The Eosin channel captures cell membranes, cytoplasm, and ECM — the spatial
-    blueprint that is absent from the Hematoxylin H-map. Injecting at 16×16 means
-    the ~30px physical misalignment between consecutive tissue sections becomes
-    <1px at this resolution, making the injection fully misalignment-safe.
+    blueprint absent from the Hematoxylin H-map. At 16×16 the ~30px physical
+    misalignment between consecutive tissue sections is <1px — injection is safe.
 
-    Architecture: 5 strided-conv downsampling stages (512→256→128→64→32→16).
+    multi_scale=False (default):
+        Uses self.encoder (nn.Sequential) — checkpoint-compatible with all
+        existing runs. Returns [B, out_channels, 16, 16].
+
+    multi_scale=True (Option B — new runs only):
+        Uses staged modules so the 32×32 intermediate can be extracted and
+        injected at the first decoder level (D5) in addition to the bottleneck.
+        Returns (feat_16, feat_32): [B, out_channels, 16, 16], [B, 64, 32, 32].
+        Stage4 always outputs 64ch regardless of out_channels.
+        INCOMPATIBLE with checkpoints trained with multi_scale=False — only
+        enable when starting a fresh training run.
+        Enable via: --eosin_multi_scale in train_mist.py.
     """
 
-    def __init__(self, out_channels=64):
+    def __init__(self, out_channels=64, multi_scale=False):
         super().__init__()
-        self.encoder = nn.Sequential(
-            nn.Conv2d(1, 32, 4, stride=2, padding=1),       # 512 → 256
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(32, 32, 4, stride=2, padding=1),       # 256 → 128
-            nn.InstanceNorm2d(32),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(32, 64, 4, stride=2, padding=1),       # 128 → 64
-            nn.InstanceNorm2d(64),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(64, 64, 4, stride=2, padding=1),       # 64 → 32
-            nn.InstanceNorm2d(64),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(64, out_channels, 4, stride=2, padding=1),  # 32 → 16
-            nn.InstanceNorm2d(out_channels),
-            nn.LeakyReLU(0.2, inplace=True),
-        )
+        self.multi_scale = multi_scale
+
+        if not multi_scale:
+            # Single nn.Sequential — preserves state_dict key compatibility
+            # with all existing checkpoints.
+            self.encoder = nn.Sequential(
+                nn.Conv2d(1, 32, 4, stride=2, padding=1),       # 512 → 256
+                nn.LeakyReLU(0.2, inplace=True),
+                nn.Conv2d(32, 32, 4, stride=2, padding=1),       # 256 → 128
+                nn.InstanceNorm2d(32),
+                nn.LeakyReLU(0.2, inplace=True),
+                nn.Conv2d(32, 64, 4, stride=2, padding=1),       # 128 → 64
+                nn.InstanceNorm2d(64),
+                nn.LeakyReLU(0.2, inplace=True),
+                nn.Conv2d(64, 64, 4, stride=2, padding=1),       # 64 → 32
+                nn.InstanceNorm2d(64),
+                nn.LeakyReLU(0.2, inplace=True),
+                nn.Conv2d(64, out_channels, 4, stride=2, padding=1),  # 32 → 16
+                nn.InstanceNorm2d(out_channels),
+                nn.LeakyReLU(0.2, inplace=True),
+            )
+        else:
+            # Staged modules so stage4 output (32×32) is accessible for D5 injection.
+            self.stage1 = nn.Sequential(
+                nn.Conv2d(1, 32, 4, stride=2, padding=1),        # 512 → 256
+                nn.LeakyReLU(0.2, inplace=True),
+            )
+            self.stage2 = nn.Sequential(
+                nn.Conv2d(32, 32, 4, stride=2, padding=1),       # 256 → 128
+                nn.InstanceNorm2d(32),
+                nn.LeakyReLU(0.2, inplace=True),
+            )
+            self.stage3 = nn.Sequential(
+                nn.Conv2d(32, 64, 4, stride=2, padding=1),       # 128 → 64
+                nn.InstanceNorm2d(64),
+                nn.LeakyReLU(0.2, inplace=True),
+            )
+            self.stage4 = nn.Sequential(
+                nn.Conv2d(64, 64, 4, stride=2, padding=1),       # 64 → 32
+                nn.InstanceNorm2d(64),
+                nn.LeakyReLU(0.2, inplace=True),
+            )
+            self.stage5 = nn.Sequential(
+                nn.Conv2d(64, out_channels, 4, stride=2, padding=1),  # 32 → 16
+                nn.InstanceNorm2d(out_channels),
+                nn.LeakyReLU(0.2, inplace=True),
+            )
 
     def forward(self, e_map):
         """
         Args:
             e_map: [B, 1, 512, 512] Eosin channel in [-1, 1]
+
         Returns:
-            [B, out_channels, 16, 16]
+            multi_scale=False: [B, out_channels, 16, 16]
+            multi_scale=True:  (feat_16, feat_32) — [B, out_ch, 16, 16], [B, 64, 32, 32]
         """
-        return self.encoder(e_map)
+        if not self.multi_scale:
+            return self.encoder(e_map)
+
+        x = self.stage1(e_map)
+        x = self.stage2(x)
+        x = self.stage3(x)
+        feat_32 = self.stage4(x)        # [B, 64, 32, 32]
+        feat_16 = self.stage5(feat_32)  # [B, out_channels, 16, 16]
+        return feat_16, feat_32

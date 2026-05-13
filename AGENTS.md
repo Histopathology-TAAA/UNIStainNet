@@ -6,13 +6,13 @@ Agent instructions for this repository.
 - Applies to the entire repository.
 - Keep changes focused and minimal. Do not refactor unrelated modules.
 - Active branch: `exp-destaining-v1-attention` — destaining variant is the main work.
-- **Current version: V3** (see [changes.md](changes.md) for full versioned changelog).
+- **Current version: V4** (see [changes.md](changes.md) for full versioned changelog).
 
 ---
 
 ## First Read
 - Project overview, setup, dataset layout, and baseline commands: [README.md](README.md)
-- Full versioned changelog (V0 → V3): [changes.md](changes.md)
+- Full versioned changelog (V0 → V4): [changes.md](changes.md)
 - Demo app entrypoint (Gradio/HF Space): [hf_space/app.py](hf_space/app.py)
 
 ---
@@ -95,7 +95,7 @@ Discriminator losses are activated only after `adversarial_start_step=2000` step
 
 ---
 
-## Active Losses (V3 defaults in train_mist.py)
+## Active Losses (V4 defaults in train_mist.py)
 
 | W&B key | Weight | Cases | What it penalizes |
 |---------|--------|-------|-------------------|
@@ -108,10 +108,11 @@ Discriminator losses are activated only after `adversarial_start_step=2000` step
 | `train/he_edge` | 0.5 | B only | Missing H&E nuclei structure in generated IHC |
 | `train/dab_intensity` | 0.2 | Both | Wrong top-10% DAB mean intensity |
 | `train/dab_histo` | 0.3 | Both | Wrong OD distribution shape (Wasserstein-1) |
-| `train/dab_block` | 0.2 | A only | Wrong spatial DAB placement (16×16 blocks) |
+| `train/dab_block` | **0.5** | A only | Wrong spatial DAB placement (16×16 blocks) — ↑ from 0.2 |
+| `train/dab_sparsity` | **0.3** | Both | Generated DAB mass > real + 0.05 margin (hinge) — new V4 |
 | `train/feat_match` | 10.0 | A only | Texture statistics mismatch (disc intermediate features) |
 | `train/uncond_adv_g` | 1.0 | Both | Unconditional realism (after step 2000) |
-| `train/proj_adv_g` | 1.0 | Both | Stain-specific realism — HER2 membrane, Ki67/ER/PR nuclear (after step 2000) |
+| `train/proj_adv_g` | **2.0** | Both | Stain-specific realism — HER2 membrane, Ki67/ER/PR nuclear — ↑ from 1.0 |
 
 **To disable any loss:** set its weight to `0.0` in `scripts/train/train_mist.py`. Most losses do
 not instantiate any module when set to 0 (the exception is `proj_disc_weight` which also
@@ -290,6 +291,8 @@ python scripts/eval/eval_mist.py --checkpoint checkpoints/destaining_v1/last.ckp
 - **num_workers on Lightning AI**: Default is 4. If you see `BrokenPipeError` in data loaders, set `num_workers=0` to debug.
 - **wandb offline mode**: If network is restricted, add `WANDB_MODE=offline` before the training command.
 - **DAB block loss at non-512 resolution**: `dab_block_size=32` assumes 512×512 input (gives 16×16 blocks). If you change `image_size`, adjust `dab_block_size` proportionally or set it to 0.
+- **`--eosin_multi_scale` checkpoint incompatibility**: Enabling `--eosin_multi_scale` changes `EosinEncoder` state_dict keys from `eosin_encoder.encoder.0.weight...` to `eosin_encoder.stage1.0.weight...`. Do NOT combine with `--resume_from` from a V3 checkpoint — it will crash with a key mismatch. Only use for fresh runs.
+- **`dab_sparsity_weight` on imbalanced batches**: The sparsity hinge penalizes per-image DAB mean. If a batch contains only high-positive stain images (e.g., pure Ki67 3+ patches), the hinge may suppress correct dense staining. The `dab_sparsity_margin=0.05` tolerance mitigates this but monitor `train/dab_sparsity` — if it's consistently 0, the generator is already within margin and the loss is inactive.
 
 ---
 

@@ -259,3 +259,90 @@ proj_disc_weight=1.0
 | `dab_block_weight` | `0.2` | Yes | Set `0.0` |
 | `dab_block_size` | `32` | — | Increase for coarser supervision |
 | `proj_disc_weight` | `1.0` | Yes | Set `0.0` (discriminator not instantiated) |
+
+---
+
+## V4 — Weight Tightening (Option A) + Multi-Scale Eosin Injection (Option B)
+
+**Motivation:** Epoch 24 analysis revealed three persisting problems:
+1. **Ki67/ER/PR over-expressiveness**: Model paints too many nuclei DAB-positive. dab_block and dab_histo losses plateaued — additional direct mass constraint needed.
+2. **HER2 nuclear shortcut unchanged**: proj_adv_g still oscillating -1.0 to +1.5 with no variance compression. Generator failing to satisfy stain-conditioned disc. Discriminator pressure needs to be doubled.
+3. **Architectural limit**: Eosin bottleneck at 16×16 (32px/pixel) is too coarse to resolve individual cell membrane rings (~1–2px at 512px). A second injection at 32×32 (16px/pixel) would provide finer membrane topology to the first decoder level.
+
+**Also observed:** val/ssim dropped sharply at step 52k and val/dab_mae regressed from 0.356 back to 0.362. Best checkpoint is approximately step 48k — resume from there.
+
+### Option A — Weight Adjustments (Resume-compatible)
+
+**Files:** `scripts/train/train_mist.py`, `src/models/trainer.py`
+
+#### New: DAB Sparsity Hinge Loss
+**File:** `src/models/trainer.py` — new method `compute_dab_sparsity_loss`
+**Param:** `dab_sparsity_weight` (default `0.3`), `dab_sparsity_margin` (default `0.05`)
+**W&B key:** `train/dab_sparsity`
+
+Hinge penalty: `relu(gen_dab_mean - real_dab_mean - margin).mean()` per image.
+Applied in both Case A and B (alignment-free: compares per-image means, not spatial positions).
+Targets the Ki67/ER/PR mass problem directly: penalises only when the total DAB mass is
+too high, not when it's correctly sparse or negative. Complements dab_histo (distribution
+shape) and dab_block (spatial placement) with a direct mass ceiling.
+
+#### Weight Changes
+| Param | V3 default | V4 default | Reason |
+|-------|-----------|-----------|--------|
+| `dab_block_weight` | `0.2` | `0.5` | Plateau at V3 value; needs stronger spatial constraint |
+| `proj_disc_weight` | `1.0` | `2.0` | HER2 proj_adv_g not converging; doubles discriminator pressure |
+| `dab_sparsity_weight` | — | `0.3` | New; direct over-staining mass control |
+
+**To resume from step-48k checkpoint with Option A weights:**
+```bash
+python scripts/train/train_mist.py \
+    --data_dir /teamspace/studios/this_studio/data/MIST \
+    --resume_from checkpoints/destaining_v1/mist_epoch022_step048000.ckpt \
+    --wandb_name destaining_v1_optionA
+```
+
+### Option B — Multi-Scale Eosin Injection (New runs only)
+
+**Files:** `src/models/edge_encoder.py`, `src/models/generator.py`, `src/models/trainer.py`, `scripts/train/train_mist.py`
+
+**Architectural change:** A second Eosin injection is added at decoder level D5 (32×32)
+in addition to the existing bottleneck injection (16×16). At 32×32 the ~30px tissue
+misalignment is ~1–2px — still negligible. This gives the decoder a membrane signal at
+finer resolution one level before the bottleneck forces coarsening.
+
+#### EosinEncoder changes (`src/models/edge_encoder.py`)
+- New param: `multi_scale=False` (backward compatible default).
+- `multi_scale=False`: keeps `self.encoder = nn.Sequential(...)` — state_dict keys
+  unchanged, all existing checkpoints continue to load.
+- `multi_scale=True`: uses staged `self.stage1..stage5`. `forward` returns
+  `(feat_16, feat_32)` — [B, out_ch, 16, 16], [B, 64, 32, 32].
+
+#### Generator changes (`src/models/generator.py`)
+- New param: `eosin_multi_scale=False`.
+- When True: `EosinEncoder(multi_scale=True)`, new `self.eosin_proj_32 = nn.Conv2d(512+64, 512, 1)`.
+- Injection point: after `dec5_act` (first decoder upsampling, before D4).
+
+#### Trainer changes (`src/models/trainer.py`)
+- New param: `eosin_multi_scale=False`, passed to generator.
+
+#### CLI (`scripts/train/train_mist.py`)
+```bash
+# Enable Option B for a NEW run (do NOT combine with --resume_from):
+python scripts/train/train_mist.py \
+    --data_dir /teamspace/studios/this_studio/data/MIST \
+    --eosin_multi_scale \
+    --wandb_name destaining_v1_optionB
+```
+
+**WARNING**: `--eosin_multi_scale` changes EosinEncoder state_dict keys
+(`stage1.0.weight` vs `encoder.0.weight`). Combining with `--resume_from` from
+a V3 checkpoint will raise a key mismatch error. Only use for fresh runs.
+
+### Hyperparameter Control (V4)
+| Param | Default (train_mist.py) | Safe to disable | How |
+|-------|------------------------|----------------|-----|
+| `dab_block_weight` | `0.5` | Yes | Set `0.0` |
+| `proj_disc_weight` | `2.0` | Yes | Set `0.0` (discriminator not instantiated) |
+| `dab_sparsity_weight` | `0.3` | Yes | Set `0.0` |
+| `dab_sparsity_margin` | `0.05` | — | Increase to allow more tolerance before penalty |
+| `eosin_multi_scale` | `False` | — | `--eosin_multi_scale` to enable (new runs only) |

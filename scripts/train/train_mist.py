@@ -10,6 +10,9 @@ Usage:
     python scripts/train/train_mist.py --data_dir /path/to/MIST
     python scripts/train/train_mist.py --data_dir /path/to/MIST --stains HER2 Ki67
     python scripts/train/train_mist.py --data_dir /path/to/MIST --batch_size 8
+
+Option A (resume): resume from step-48k checkpoint with tightened weights.
+Option B (new run): add --eosin_multi_scale for 32x32 Eosin injection at D5.
 """
 
 import argparse
@@ -45,16 +48,41 @@ def main():
                         help='Enable Eosin bottleneck injection (requires trainA-E / valA-E dirs). '
                              'Disable with --no_use_eosin_encoder if E-map dirs are not available.')
     parser.add_argument('--no_use_eosin_encoder', dest='use_eosin_encoder', action='store_false')
+    # -------------------------------------------------------------------------
+    # Option B: multi-scale Eosin injection (default OFF)
+    #
+    # Adds a second Eosin injection at decoder D5 (32×32) in addition to the
+    # bottleneck (16×16). At 32×32 the 30px misalignment is <2px — still safe.
+    # Gives the decoder a finer membrane signal, intended to help the HER2
+    # membrane localization problem.
+    #
+    # HOW TO ENABLE for a new run:
+    #   Add --eosin_multi_scale to your training command.
+    #   Do NOT use with --resume_from — incompatible with checkpoints trained
+    #   without it (different EosinEncoder state_dict keys: stage1/stage2/...
+    #   vs the old sequential encoder.0/encoder.1/...).
+    # -------------------------------------------------------------------------
+    parser.add_argument('--eosin_multi_scale', action='store_true', default=False,
+                        help='[Option B — new runs only] Second Eosin injection at D5 (32x32). '
+                             'Incompatible with existing checkpoints. Only use for fresh runs.')
+    parser.add_argument('--no_eosin_multi_scale', dest='eosin_multi_scale', action='store_false')
     args = parser.parse_args()
 
     print("=" * 70)
     print(f"TRAINING: Unified Multi-Stain UNIStainNet")
     print(f"  Stains: {args.stains}")
+    if args.eosin_multi_scale:
+        print("  [Option B] Multi-scale Eosin injection ENABLED (32x32 + 16x16)")
     print("=" * 70)
 
-    # Paper hyperparameters
+    # -------------------------------------------------------------------------
+    # Loss weights — Option A values (tightened at epoch 24 analysis):
+    #   dab_block_weight: 0.2 → 0.5   (stronger spatial constraint for Ki67)
+    #   proj_disc_weight: 1.0 → 2.0   (more HER2 membrane pressure)
+    #   dab_sparsity_weight: 0.3       (new — hinge on over-staining mass)
+    # -------------------------------------------------------------------------
     model = UNIStainNetTrainer(
-        # Architecture (identical to BCI except no class conditioning)
+        # Architecture
         num_classes=5,          # 4 stains + null
         null_class=4,
         class_dim=64,
@@ -69,7 +97,7 @@ def main():
         gen_lr=1e-4,
         disc_lr=4e-4,
         warmup_steps=1000,
-        # Loss weights (paper configuration)
+        # Loss weights
         lpips_weight=1.0,
         lpips_256_weight=0.5,
         lpips_512_weight=0.0,
@@ -88,12 +116,15 @@ def main():
         feat_match_weight=10.0,
         patchnce_weight=0.0,
         bg_white_weight=0.0,
-        # New losses
+        # IHC / DAB losses
         ihc_edge_weight=0.1,        # IHC-to-IHC Sobel, Case A only
         dab_histo_weight=0.3,       # Wasserstein-1 OD distribution, both cases
-        dab_block_weight=0.2,       # Block-level DAB spatial, Case A only
+        dab_block_weight=0.5,       # Block-level DAB spatial, Case A only (↑ from 0.2)
         dab_block_size=32,          # 32px blocks → 16×16 = 256 blocks on 512 image
-        proj_disc_weight=1.0,       # Stain-conditioned projection discriminator
+        dab_sparsity_weight=0.3,    # Hinge over-staining penalty, both cases (new)
+        dab_sparsity_margin=0.05,   # Tolerance before penalty kicks in
+        # Discriminators
+        proj_disc_weight=2.0,       # Stain-conditioned proj disc (↑ from 1.0)
         # GAN training
         r1_weight=10.0,
         r1_every=16,
@@ -107,12 +138,12 @@ def main():
         # On-the-fly UNI extraction
         extract_uni_on_the_fly=True,
         uni_spatial_pool_size=32,
-        # Domain routing: 25% Case B (H&E H-map / misaligned) by default.
-        # Set via --case_b_prob. Do not go below 0.20.
+        # Domain routing
         case_b_prob=args.case_b_prob,
-        # Eosin bottleneck injection
+        # Eosin injection
         use_eosin_encoder=args.use_eosin_encoder,
         eosin_out_ch=64,
+        eosin_multi_scale=args.eosin_multi_scale,   # Option B — default False
     )
 
     dm = MISTMultiStainCropDataModule(

@@ -127,6 +127,17 @@ class UNIStainNetTrainer(pl.LightningModule):
         # Stain-conditioned projection discriminator (Miyato & Koyama, 2018)
         # Disable: set proj_disc_weight=0.0 — discriminator not instantiated at all
         proj_disc_weight=0.0,
+        # DAB over-staining penalty: hinge on generated_dab_mean > real_dab_mean + margin.
+        # Targets Ki67/ER/PR over-expressiveness without penalising correct sparse outputs.
+        # Applied in both Case A and B (alignment-free: compares per-image means).
+        # Disable: set dab_sparsity_weight=0.0
+        dab_sparsity_weight=0.0,
+        dab_sparsity_margin=0.05,
+        # Multi-scale Eosin injection (Option B — new runs only).
+        # Adds a second Eosin injection at decoder D5 (32×32) in addition to the
+        # bottleneck (16×16). Incompatible with checkpoints trained with multi_scale=False.
+        # Disable (default): eosin_multi_scale=False
+        eosin_multi_scale=False,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -151,6 +162,7 @@ class UNIStainNetTrainer(pl.LightningModule):
             uni_spade_at_512=uni_spade_at_512,
             use_eosin_encoder=use_eosin_encoder,
             eosin_out_ch=eosin_out_ch,
+            eosin_multi_scale=eosin_multi_scale,
         )
 
         # Discriminator (global multi-scale) — only instantiate if adversarial loss is active.
@@ -706,6 +718,34 @@ class UNIStainNetTrainer(pl.LightningModule):
 
             return F.l1_loss(gen_blocks, tgt_blocks.detach())
 
+    def compute_dab_sparsity_loss(self, generated, target):
+        """Hinge penalty for over-staining: generated DAB mean > real + margin.
+
+        Addresses the Ki67/ER/PR over-expressiveness: the model paints more nuclei
+        DAB-positive than ground truth. Unlike dab_histo (distribution shape) or
+        dab_block (spatial placement), this directly penalizes the total stain mass
+        being too high. The hinge form means correct or under-staining is not penalised —
+        only over-staining above the margin triggers a gradient.
+
+        Alignment-free: compares per-image means, not spatial positions.
+        Applied in both Case A and B.
+
+        Disable: set dab_sparsity_weight=0.0
+        """
+        with torch.amp.autocast('cuda', enabled=False):
+            gen = generated.float()
+            tgt = target.float()
+
+            dab_gen = self.dab_extractor.extract_dab_intensity(gen, normalize="none")
+            dab_tgt = self.dab_extractor.extract_dab_intensity(tgt, normalize="none")
+
+            B = dab_gen.shape[0]
+            gen_mean = dab_gen.reshape(B, -1).mean(dim=1)  # [B]
+            tgt_mean = dab_tgt.reshape(B, -1).mean(dim=1)  # [B]
+
+            margin = self.hparams.dab_sparsity_margin
+            return torch.relu(gen_mean - tgt_mean - margin).mean()
+
     def training_step(self, batch, batch_idx):
         he_rgb, ihc_rgb, he_h_map, ihc_h_map, he_e_map, labels, fnames = batch
         opt_g, opt_d = self.optimizers()
@@ -790,6 +830,14 @@ class UNIStainNetTrainer(pl.LightningModule):
             loss_dab_block = self.compute_dab_block_loss(generated, ihc_rgb)
             loss_g = loss_g + self.hparams.dab_block_weight * loss_dab_block
             self.log('train/dab_block', loss_dab_block, prog_bar=False)
+
+        # DAB sparsity: hinge on over-staining, both cases.
+        # Directly targets Ki67/ER/PR over-expressiveness by penalising total DAB
+        # mass being too high. Hinge form: no penalty when correctly sparse or negative.
+        if self.hparams.dab_sparsity_weight > 0:
+            loss_dab_sparsity = self.compute_dab_sparsity_loss(generated, ihc_rgb)
+            loss_g = loss_g + self.hparams.dab_sparsity_weight * loss_dab_sparsity
+            self.log('train/dab_sparsity', loss_dab_sparsity, prog_bar=False)
 
         if self.hparams.dab_contrast_weight > 0:
             # Use labels_dropped: samples where class was CFG-dropped to null_class
