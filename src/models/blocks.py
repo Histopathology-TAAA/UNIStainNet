@@ -52,15 +52,21 @@ class SPADEBlock(nn.Module):
         """
         Args:
             x: [B, C, H, W] feature map
-            uni_spatial: [B, uni_ch, H, W] UNI features at matching resolution
+            uni_spatial: [B, uni_ch, H, W] UNI features at matching resolution,
+                or None to disable the SPADE branch and keep only FiLM
             class_emb: [B, class_dim] class embedding
         """
         normalized = self.norm(x)
 
-        # SPADE modulation from UNI features
-        shared = self.spade_shared(uni_spatial)
-        gamma_s = self.spade_gamma(shared)
-        beta_s = self.spade_beta(shared)
+        # SPADE modulation from UNI features; allow label-only ablation by
+        # skipping the UNI branch entirely.
+        if uni_spatial is not None:
+            shared = self.spade_shared(uni_spatial)
+            gamma_s = self.spade_gamma(shared)
+            beta_s = self.spade_beta(shared)
+        else:
+            gamma_s = torch.zeros_like(normalized)
+            beta_s = torch.zeros_like(normalized)
 
         # FiLM modulation from class
         gamma_c = self.film_gamma(class_emb).unsqueeze(-1).unsqueeze(-1)  # [B, C, 1, 1]

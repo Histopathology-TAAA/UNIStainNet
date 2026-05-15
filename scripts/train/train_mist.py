@@ -73,6 +73,12 @@ def main():
     parser.add_argument('--enable_attention_residual', action='store_true', default=True,
                         help='Enable independent attention residual path in decoder (ablation toggle).')
     parser.add_argument('--disable_attention_residual', dest='enable_attention_residual', action='store_false')
+    parser.add_argument('--spade_use_uni', action='store_true', default=True,
+                        help='Condition SPADE blocks on UNI spatial maps. Disable for label-only SPADE ablation.')
+    parser.add_argument('--no_spade_use_uni', dest='spade_use_uni', action='store_false')
+    parser.add_argument('--edge_encoder', type=str, default='v2', choices=['none', 'v1', 'v2'],
+                        help='Edge encoder mode: none disables it, v1 enables Sobel single-scale, '
+                             'v2 enables multi-scale Sobel.')
     args = parser.parse_args()
 
     print("=" * 70)
@@ -82,6 +88,8 @@ def main():
         print("  [Option B] Multi-scale Eosin injection ENABLED (32x32 + 16x16)")
     print(f"  use_attention_for_spade: {args.use_attention_for_spade}")
     print(f"  enable_attention_residual: {args.enable_attention_residual}")
+    print(f"  spade_use_uni: {args.spade_use_uni}")
+    print(f"  edge_encoder: {args.edge_encoder}")
     print("=" * 70)
 
     # -------------------------------------------------------------------------
@@ -134,7 +142,7 @@ def main():
         uni_dim=1024,
         ndf=64,
         input_skip=True,
-        edge_encoder='v2',
+        edge_encoder=False if args.edge_encoder == 'none' else args.edge_encoder,
         edge_base_ch=32,
         uni_spatial_size=32,    # 32x32 patch tokens from UNI
         label_names=['HER2', 'Ki67', 'ER', 'PR'],
@@ -160,6 +168,7 @@ def main():
         # Decoder conditioning ablations
         use_attention_for_spade=args.use_attention_for_spade,
         enable_attention_residual=args.enable_attention_residual,
+        spade_use_uni=args.spade_use_uni,
         # Domain routing
         case_b_prob=args.case_b_prob,
         # Eosin injection

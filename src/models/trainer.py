@@ -107,6 +107,7 @@ class UNIStainNetTrainer(pl.LightningModule):
         # Decoder conditioning ablations
         use_attention_for_spade=False,
         enable_attention_residual=True,
+        spade_use_uni=True,
         # Per-label names for multi-stain logging
         label_names=None,
         # Mixed-domain routing: probability of Case B (H&E H-map, misaligned).
@@ -168,6 +169,7 @@ class UNIStainNetTrainer(pl.LightningModule):
             eosin_multi_scale=eosin_multi_scale,
             use_attention_for_spade=use_attention_for_spade,
             enable_attention_residual=enable_attention_residual,
+            spade_use_uni=spade_use_uni,
         )
 
         # Discriminator (global multi-scale) — only instantiate if adversarial loss is active.

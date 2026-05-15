@@ -31,7 +31,8 @@ class SPADEUNetGenerator(nn.Module):
                  input_skip=False, edge_encoder=False, edge_base_ch=32,
                  uni_spatial_size=4, image_size=512, uni_spade_at_512=False,
                  use_eosin_encoder=False, eosin_out_ch=64, eosin_multi_scale=False,
-                 use_attention_for_spade=False, enable_attention_residual=True):
+                 use_attention_for_spade=False, enable_attention_residual=True,
+                 spade_use_uni=True):
         super().__init__()
         self.num_classes = num_classes
         self.class_dim = class_dim
@@ -43,6 +44,7 @@ class SPADEUNetGenerator(nn.Module):
         self.eosin_multi_scale = eosin_multi_scale
         self.use_attention_for_spade = use_attention_for_spade
         self.enable_attention_residual = enable_attention_residual
+        self.spade_use_uni = spade_use_uni
 
         # Class embedding used by FiLM in the decoder.
         self.class_embed = nn.Embedding(num_classes, class_dim)
@@ -276,7 +278,9 @@ class SPADEUNetGenerator(nn.Module):
         x_conv = x
         need_attn = self.use_attention_for_spade or self.enable_attention_residual
         x_attn = self.dec5_attn(x, uni_features) if need_attn else None
-        spade_map_32 = x_attn if (self.use_attention_for_spade and x_attn is not None) else uni_maps[32]
+        spade_map_32 = None
+        if self.spade_use_uni:
+            spade_map_32 = x_attn if (self.use_attention_for_spade and x_attn is not None) else uni_maps[32]
         x = self.dec5_spade(x, spade_map_32, class_emb)
         if self.enable_attention_residual and x_attn is not None:
             x = x + (x_attn - x_conv)
@@ -295,7 +299,9 @@ class SPADEUNetGenerator(nn.Module):
         x = self.dec4_conv(x)
         x_conv = x
         x_attn = self.dec4_attn(x, uni_features) if need_attn else None
-        spade_map_64 = x_attn if (self.use_attention_for_spade and x_attn is not None) else uni_maps[64]
+        spade_map_64 = None
+        if self.spade_use_uni:
+            spade_map_64 = x_attn if (self.use_attention_for_spade and x_attn is not None) else uni_maps[64]
         x = self.dec4_spade(x, spade_map_64, class_emb)
         if self.enable_attention_residual and x_attn is not None:
             x = x + (x_attn - x_conv)
@@ -308,7 +314,9 @@ class SPADEUNetGenerator(nn.Module):
         x = self.dec3_conv(x)
         x_conv = x
         x_attn = self.dec3_attn(x, uni_features) if need_attn else None
-        spade_map_128 = x_attn if (self.use_attention_for_spade and x_attn is not None) else uni_maps[128]
+        spade_map_128 = None
+        if self.spade_use_uni:
+            spade_map_128 = x_attn if (self.use_attention_for_spade and x_attn is not None) else uni_maps[128]
         x = self.dec3_spade(x, spade_map_128, class_emb)
         if self.enable_attention_residual and x_attn is not None:
             x = x + (x_attn - x_conv)
@@ -321,7 +329,9 @@ class SPADEUNetGenerator(nn.Module):
         x = self.dec2_conv(x)
         x_conv = x
         x_attn = self.dec2_attn(x, uni_features) if need_attn else None
-        spade_map_256 = x_attn if (self.use_attention_for_spade and x_attn is not None) else uni_maps[256]
+        spade_map_256 = None
+        if self.spade_use_uni:
+            spade_map_256 = x_attn if (self.use_attention_for_spade and x_attn is not None) else uni_maps[256]
         x = self.dec2_spade(x, spade_map_256, class_emb)
         if self.enable_attention_residual and x_attn is not None:
             x = x + (x_attn - x_conv)
@@ -336,10 +346,13 @@ class SPADEUNetGenerator(nn.Module):
             x_conv = x
             x_attn = self.dec1_attn(x, uni_features) if need_attn else None
             if self.dec1_spade is not None and 512 in uni_maps:
-                if self.use_attention_for_spade and x_attn is not None:
-                    spade_map_512 = self.dec1_attn_to_spade(x_attn)
+                if self.spade_use_uni:
+                    if self.use_attention_for_spade and x_attn is not None:
+                        spade_map_512 = self.dec1_attn_to_spade(x_attn)
+                    else:
+                        spade_map_512 = uni_maps[512]
                 else:
-                    spade_map_512 = uni_maps[512]
+                    spade_map_512 = None
                 x = self.dec1_spade(x, spade_map_512, class_emb)
             if self.enable_attention_residual and x_attn is not None:
                 x = x + (x_attn - x_conv)
