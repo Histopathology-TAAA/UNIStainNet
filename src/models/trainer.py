@@ -104,6 +104,9 @@ class UNIStainNetTrainer(pl.LightningModule):
         image_size=512,
         # 1024 architecture: extend UNI SPADE to 512 level
         uni_spade_at_512=False,
+        # Decoder conditioning ablations
+        use_attention_for_spade=False,
+        enable_attention_residual=True,
         # Per-label names for multi-stain logging
         label_names=None,
         # Mixed-domain routing: probability of Case B (H&E H-map, misaligned).
@@ -163,6 +166,8 @@ class UNIStainNetTrainer(pl.LightningModule):
             use_eosin_encoder=use_eosin_encoder,
             eosin_out_ch=eosin_out_ch,
             eosin_multi_scale=eosin_multi_scale,
+            use_attention_for_spade=use_attention_for_spade,
+            enable_attention_residual=enable_attention_residual,
         )
 
         # Discriminator (global multi-scale) — only instantiate if adversarial loss is active.

@@ -66,6 +66,13 @@ def main():
                         help='[Option B — new runs only] Second Eosin injection at D5 (32x32). '
                              'Incompatible with existing checkpoints. Only use for fresh runs.')
     parser.add_argument('--no_eosin_multi_scale', dest='eosin_multi_scale', action='store_false')
+    parser.add_argument('--use_attention_for_spade', action='store_true', default=False,
+                        help='Use decoder cross-attention output as SPADE spatial conditioning map '
+                            '(instead of raw UNI spatial maps).')
+    parser.add_argument('--no_use_attention_for_spade', dest='use_attention_for_spade', action='store_false')
+    parser.add_argument('--enable_attention_residual', action='store_true', default=True,
+                        help='Enable independent attention residual path in decoder (ablation toggle).')
+    parser.add_argument('--disable_attention_residual', dest='enable_attention_residual', action='store_false')
     args = parser.parse_args()
 
     print("=" * 70)
@@ -73,14 +80,52 @@ def main():
     print(f"  Stains: {args.stains}")
     if args.eosin_multi_scale:
         print("  [Option B] Multi-scale Eosin injection ENABLED (32x32 + 16x16)")
+    print(f"  use_attention_for_spade: {args.use_attention_for_spade}")
+    print(f"  enable_attention_residual: {args.enable_attention_residual}")
     print("=" * 70)
 
     # -------------------------------------------------------------------------
-    # Loss weights — Option A values (tightened at epoch 24 analysis):
-    #   dab_block_weight: 0.2 → 0.5   (stronger spatial constraint for Ki67)
-    #   proj_disc_weight: 1.0 → 2.0   (more HER2 membrane pressure)
-    #   dab_sparsity_weight: 0.3       (new — hinge on over-staining mass)
+    # Loss config (single edit point for ablations)
+    #
+    # Paper/original implementation baseline reference (as commonly used defaults):
+    #   lpips_weight=1.0
+    #   adversarial_weight=1.0
+    #   dab_intensity_weight=0.1
+    #   dab_contrast_weight=0.05
+    #   other auxiliary losses typically disabled (0.0)
+    #
+    # Current V4 tuned defaults below (edit this dict to add/remove/change losses).
     # -------------------------------------------------------------------------
+    LOSS_WEIGHTS = {
+        'lpips_weight': 1.0,
+        'lpips_256_weight': 0.5,
+        'lpips_512_weight': 0.0,
+        'l1_fullres_weight': 1.0,
+        'lpips_fullres_weight': 1.0,
+        'he_edge_weight': 0.5,
+        'l1_lowres_weight': 1.0,
+        'adversarial_weight': 0.0,
+        'uncond_disc_weight': 1.0,
+        'dab_intensity_weight': 0.2,
+        'dab_contrast_weight': 0.0,
+        'dab_sharpness_weight': 0.0,
+        'gram_style_weight': 0.0,
+        'edge_weight': 0.0,
+        'crop_disc_weight': 0.0,
+        'feat_match_weight': 10.0,
+        'patchnce_weight': 0.0,
+        'bg_white_weight': 0.0,
+        # IHC / DAB losses
+        'ihc_edge_weight': 0.1,
+        'dab_histo_weight': 0.3,
+        'dab_block_weight': 0.5,
+        'dab_block_size': 32,
+        'dab_sparsity_weight': 0.3,
+        'dab_sparsity_margin': 0.05,
+        # Stain-conditioned discriminator
+        'proj_disc_weight': 2.0,
+    }
+
     model = UNIStainNetTrainer(
         # Architecture
         num_classes=5,          # 4 stains + null
@@ -97,34 +142,8 @@ def main():
         gen_lr=1e-4,
         disc_lr=4e-4,
         warmup_steps=1000,
-        # Loss weights
-        lpips_weight=1.0,
-        lpips_256_weight=0.5,
-        lpips_512_weight=0.0,
-        l1_fullres_weight=1.0,
-        lpips_fullres_weight=1.0,
-        he_edge_weight=0.5,
-        l1_lowres_weight=1.0,
-        adversarial_weight=0.0,
-        uncond_disc_weight=1.0,
-        dab_intensity_weight=0.2,
-        dab_contrast_weight=0.0,    # No class ordering across stains
-        dab_sharpness_weight=0.0,
-        gram_style_weight=0.0,
-        edge_weight=0.0,
-        crop_disc_weight=0.0,
-        feat_match_weight=10.0,
-        patchnce_weight=0.0,
-        bg_white_weight=0.0,
-        # IHC / DAB losses
-        ihc_edge_weight=0.1,        # IHC-to-IHC Sobel, Case A only
-        dab_histo_weight=0.3,       # Wasserstein-1 OD distribution, both cases
-        dab_block_weight=0.5,       # Block-level DAB spatial, Case A only (↑ from 0.2)
-        dab_block_size=32,          # 32px blocks → 16×16 = 256 blocks on 512 image
-        dab_sparsity_weight=0.3,    # Hinge over-staining penalty, both cases (new)
-        dab_sparsity_margin=0.05,   # Tolerance before penalty kicks in
-        # Discriminators
-        proj_disc_weight=2.0,       # Stain-conditioned proj disc (↑ from 1.0)
+        # Loss weights (centralized)
+        **LOSS_WEIGHTS,
         # GAN training
         r1_weight=10.0,
         r1_every=16,
@@ -138,6 +157,9 @@ def main():
         # On-the-fly UNI extraction
         extract_uni_on_the_fly=True,
         uni_spatial_pool_size=32,
+        # Decoder conditioning ablations
+        use_attention_for_spade=args.use_attention_for_spade,
+        enable_attention_residual=args.enable_attention_residual,
         # Domain routing
         case_b_prob=args.case_b_prob,
         # Eosin injection
