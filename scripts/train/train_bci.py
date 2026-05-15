@@ -31,6 +31,8 @@ def main():
                         help='Wandb run name')
     parser.add_argument('--resume_from', type=str, default=None,
                         help='Resume from checkpoint path')
+    parser.add_argument('--devices', type=int, default=1,
+                        help='Number of GPUs (default: 1). Use >1 for DDP multi-GPU training.')
     args = parser.parse_args()
 
     print("=" * 70)
@@ -114,7 +116,8 @@ def main():
     trainer = pl.Trainer(
         max_epochs=args.max_epochs,
         accelerator='gpu',
-        devices=1,
+        devices=args.devices,
+        strategy='ddp_find_unused_parameters_true',
         precision='bf16',
         callbacks=[ckpt_callback, lr_monitor],
         logger=wandb_logger,

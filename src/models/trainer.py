@@ -892,6 +892,8 @@ class UNIStainNetTrainer(pl.LightningModule):
 
     def _log_sample_grid(self, he, her2_01, gen_01, key):
         """Log H&E | Real | Gen grid to wandb."""
+        if not self.trainer.is_global_zero:
+            return
         n = min(4, len(he))
         he_01 = ((he[:n].cpu() + 1) / 2).clamp(0, 1)
         grid_images = []
@@ -981,6 +983,8 @@ class UNIStainNetTrainer(pl.LightningModule):
 
     def on_validation_epoch_end(self):
         """Log per-label sample grids if multiple labels are present."""
+        if not self.trainer.is_global_zero:
+            return
         if not hasattr(self, '_val_per_label_samples') or len(self._val_per_label_samples) <= 1:
             return
 

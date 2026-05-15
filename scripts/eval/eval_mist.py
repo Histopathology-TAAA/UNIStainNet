@@ -24,15 +24,11 @@ import json
 from pathlib import Path
 
 import torch
-import torch.nn.functional as F
-import timm
-import torchvision.transforms as transforms
 import numpy as np
 from tqdm import tqdm
 
 from src.models.trainer import UNIStainNetTrainer
-from src.data.bci_dataset import MISTCropDataModule
-from src.data.mist_dataset import STAIN_TO_LABEL
+from src.data.mist_dataset import MISTMultiStainCropDataModule, STAIN_TO_LABEL
 from src.utils.dab import DABExtractor
 from src.utils.metrics import (
     compute_image_quality_metrics,
@@ -44,86 +40,34 @@ from src.utils.metrics import (
 )
 
 
-def load_uni_model():
-    """Load UNI ViT-L/16 for on-the-fly feature extraction during eval."""
-    model = timm.create_model("hf-hub:MahmoodLab/uni", pretrained=True,
-                               init_values=1e-5, dynamic_img_size=True)
-    model = model.cuda().eval()
-    return model
-
-
-def extract_features_for_crop(uni_model, he_crop_01, spatial_pool_size=32):
-    """Extract UNI features from a 512x512 H&E crop."""
-    uni_transform = transforms.Compose([
-        transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                             std=[0.229, 0.224, 0.225]),
-    ])
-
-    B = he_crop_01.shape[0]
-    num_crops = 4
-    patches_per_side = 14
-
-    sub_crops = []
-    crop_h = he_crop_01.shape[2] // num_crops
-    crop_w = he_crop_01.shape[3] // num_crops
-    for i in range(num_crops):
-        for j in range(num_crops):
-            sub = he_crop_01[:, :, i*crop_h:(i+1)*crop_h, j*crop_w:(j+1)*crop_w]
-            sub = F.interpolate(sub, size=(224, 224), mode='bicubic', align_corners=False)
-            sub = torch.stack([uni_transform(s) for s in sub])
-            sub_crops.append(sub)
-
-    all_crops = torch.stack(sub_crops, dim=1).reshape(B * 16, 3, 224, 224).cuda()
-
-    with torch.no_grad():
-        all_feats = uni_model.forward_features(all_crops)
-        patch_tokens = all_feats[:, 1:, :]
-
-    patch_tokens = patch_tokens.reshape(
-        B, num_crops, num_crops, patches_per_side, patches_per_side, 1024
-    )
-    full_size = num_crops * patches_per_side
-    full_grid = patch_tokens.permute(0, 1, 3, 2, 4, 5).reshape(B, full_size, full_size, 1024)
-
-    if spatial_pool_size < full_size:
-        grid_bchw = full_grid.permute(0, 3, 1, 2)
-        pooled = F.adaptive_avg_pool2d(grid_bchw, spatial_pool_size)
-        result = pooled.permute(0, 2, 3, 1)
-    else:
-        result = full_grid
-
-    S = result.shape[1]
-    return result.reshape(B, S * S, 1024).cpu()
-
-
 @torch.no_grad()
-def generate_for_stain(model, uni_model, dataloader, stain_label, guidance_scale=1.0, seed=42,
-                       spatial_pool_size=32):
-    """Generate IHC images for a specific stain."""
-    all_gen, all_real, all_he, all_fnames = [], [], [], []
+def generate_for_stain(model, dataloader, stain_label, guidance_scale=1.0, seed=42):
+    """Generate IHC images for a specific stain using the model's internal UNI pipeline."""
+    all_gen, all_real, all_he = [], [], []
 
-    for batch_idx, batch in enumerate(tqdm(dataloader, desc=f"Generating")):
-        he, her2, uni_sub_crops, labels, fnames = batch
-        he, her2 = he.cuda().float(), her2.cuda().float()
+    for batch_idx, batch in enumerate(tqdm(dataloader, desc="Generating")):
+        he_rgb, ihc_rgb, he_h_map, _ihc_h_map, _labels, _fnames = batch
+        he_rgb = he_rgb.cuda().float()
+        ihc_rgb = ihc_rgb.cuda().float()
+        he_h_map = he_h_map.cuda().float()
 
-        # Override labels with stain label
-        stain_labels = torch.full((he.size(0),), stain_label, device='cuda', dtype=torch.long)
+        # Override labels with the requested stain label for conditioning
+        stain_labels = torch.full((he_rgb.size(0),), stain_label, device='cuda', dtype=torch.long)
 
-        # Extract UNI features
-        he_01 = ((he + 1) / 2).clamp(0, 1)
-        uni = extract_features_for_crop(uni_model, he_01,
-                                        spatial_pool_size=spatial_pool_size).cuda()
+        # Use model's internal UNI feature extraction pipeline
+        uni_sub_crops = model._prepare_uni_sub_crops_from_tensor(he_rgb)
+        uni = model._extract_uni_from_sub_crops(uni_sub_crops)
 
-        gen = model.generate(he, uni, stain_labels,
+        # Generate from H-map input (not H&E RGB)
+        gen = model.generate(he_h_map, uni, stain_labels,
                              guidance_scale=guidance_scale,
                              seed=seed + batch_idx)
 
         all_gen.append(gen.cpu())
-        all_real.append(her2.cpu())
-        all_he.append(he.cpu())
-        all_fnames.extend(fnames)
+        all_real.append(ihc_rgb.cpu())
+        all_he.append(he_rgb.cpu())
 
-    return torch.cat(all_gen), torch.cat(all_real), torch.cat(all_he), all_fnames
+    return torch.cat(all_gen), torch.cat(all_real), torch.cat(all_he)
 
 
 def main():
@@ -156,12 +100,11 @@ def main():
     model = UNIStainNetTrainer.load_from_checkpoint(args.checkpoint, strict=False)
     model = model.cuda().eval()
 
-    # Read spatial size from checkpoint hparams (default 32 for backward compat)
-    spatial_pool_size = getattr(model.hparams, 'uni_spatial_size', 32)
-    print(f"UNI spatial size: {spatial_pool_size}x{spatial_pool_size}")
-
-    # Load UNI
-    uni_model = load_uni_model()
+    # Read image size and UNI spatial size from checkpoint hparams
+    image_size = getattr(model.hparams, 'image_size', 512)
+    uni_spatial_size = getattr(model.hparams, 'uni_spatial_size', 32)
+    print(f"Image size: {image_size}x{image_size}")
+    print(f"UNI spatial size: {uni_spatial_size}x{uni_spatial_size}")
 
     results = {
         'checkpoint': args.checkpoint,
@@ -182,24 +125,23 @@ def main():
         print(f"EVALUATING: {stain} (label={stain_label})")
         print(f"{'='*50}")
 
-        # Data for this stain
-        stain_data_dir = Path(args.data_dir) / stain / 'TrainValAB'
-        dm = MISTCropDataModule(
-            data_dir=str(stain_data_dir),
+        # Use MISTMultiStainCropDataModule with a single stain
+        dm = MISTMultiStainCropDataModule(
+            base_dir=args.data_dir,
+            stains=[stain],
             batch_size=args.batch_size,
             num_workers=4,
-            image_size=(512, 512),
-            crop_size=512,
-            null_class=stain_label,  # Use stain label as the "class"
+            image_size=(image_size, image_size),
+            crop_size=image_size,
+            null_class=4,
         )
         dm.setup('test')
         test_loader = dm.test_dataloader()
 
         # Generate
-        gen, real, he, fnames = generate_for_stain(
-            model, uni_model, test_loader, stain_label,
-            guidance_scale=args.guidance_scale,
-            spatial_pool_size=spatial_pool_size)
+        gen, real, he = generate_for_stain(
+            model, test_loader, stain_label,
+            guidance_scale=args.guidance_scale)
         print(f"Generated {len(gen)} images")
 
         if args.composite_bg:
@@ -243,8 +185,9 @@ def main():
               f"SSIM={iq['ssim_mean']:.3f} | "
               f"Pearson-r={dab.get('dab_pearson_r', 0):.3f}")
 
-    # Free UNI model
-    del uni_model
+    # Free UNI model (lazily loaded inside the trainer)
+    if model._uni_model is not None:
+        del model._uni_model
     torch.cuda.empty_cache()
 
     # Macro-averaged summary

@@ -1,3 +1,7 @@
+.venv/
+MIST/
+Destained_Results/
+
 __pycache__/
 *.pyc
 *.pyo

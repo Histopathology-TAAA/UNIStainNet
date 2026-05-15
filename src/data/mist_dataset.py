@@ -264,6 +264,7 @@ class MISTMultiStainCropDataModule(pl.LightningDataModule):
             self.train_dataset, batch_size=self.batch_size, shuffle=True,
             num_workers=self.num_workers, pin_memory=True,
             persistent_workers=self.num_workers > 0,
+            drop_last=True,
         )
 
     def val_dataloader(self):
