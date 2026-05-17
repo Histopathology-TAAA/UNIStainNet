@@ -29,7 +29,8 @@ class SPADEUNetGenerator(nn.Module):
 
     def __init__(self, num_classes=5, class_dim=64, uni_dim=1024,
                  input_skip=False, edge_encoder=False, edge_base_ch=32,
-                 uni_spatial_size=4, image_size=512, uni_spade_at_512=False):
+                 uni_spatial_size=4, image_size=512, uni_spade_at_512=False,
+                 use_spatial=False, spatial_dim=64):
         super().__init__()
         self.num_classes = num_classes
         self.class_dim = class_dim
@@ -38,6 +39,8 @@ class SPADEUNetGenerator(nn.Module):
         self.uni_spatial_size = uni_spatial_size
         self.image_size = image_size
         self.uni_spade_at_512 = uni_spade_at_512
+        self.use_spatial = use_spatial
+        self.spatial_dim = spatial_dim
 
         # Class embedding (5 classes: 0, 1+, 2+, 3+, null)
         self.class_embed = nn.Embedding(num_classes, class_dim)
@@ -120,22 +123,26 @@ class SPADEUNetGenerator(nn.Module):
         # Channel counts: main_skip + edge_skip (if enabled) + upsampled
         # D5: 512 (up) + 512 (skip e4) + edge_ch[32] → 512
         self.dec5_conv = nn.Conv2d(512 + 512 + edge_ch[32], 512, 3, padding=1)
-        self.dec5_spade = SPADEBlock(512, uni_channels=512, class_dim=class_dim)
+        self.dec5_spade = SPADEBlock(512, uni_channels=512, class_dim=class_dim,
+                                      spatial_dim=(spatial_dim if use_spatial else 0))
         self.dec5_act = nn.LeakyReLU(0.2, inplace=True)
 
         # D4: 512 (up) + 256 (skip e3) + edge_ch[64] → 256
         self.dec4_conv = nn.Conv2d(512 + 256 + edge_ch[64], 256, 3, padding=1)
-        self.dec4_spade = SPADEBlock(256, uni_channels=256, class_dim=class_dim)
+        self.dec4_spade = SPADEBlock(256, uni_channels=256, class_dim=class_dim,
+                                      spatial_dim=(spatial_dim if use_spatial else 0))
         self.dec4_act = nn.LeakyReLU(0.2, inplace=True)
 
         # D3: 256 (up) + 128 (skip e2) + edge_ch[128] → 128
         self.dec3_conv = nn.Conv2d(256 + 128 + edge_ch[128], 128, 3, padding=1)
-        self.dec3_spade = SPADEBlock(128, uni_channels=128, class_dim=class_dim)
+        self.dec3_spade = SPADEBlock(128, uni_channels=128, class_dim=class_dim,
+                                      spatial_dim=(spatial_dim if use_spatial else 0))
         self.dec3_act = nn.LeakyReLU(0.2, inplace=True)
 
         # D2: 128 (up) + 64 (skip e1) + edge_ch[256] → 64
         self.dec2_conv = nn.Conv2d(128 + 64 + edge_ch[256], 64, 3, padding=1)
-        self.dec2_spade = SPADEBlock(64, uni_channels=64, class_dim=class_dim)
+        self.dec2_spade = SPADEBlock(64, uni_channels=64, class_dim=class_dim,
+                                      spatial_dim=(spatial_dim if use_spatial else 0))
         self.dec2_act = nn.LeakyReLU(0.2, inplace=True)
 
         if image_size == 1024:
@@ -144,7 +151,8 @@ class SPADEUNetGenerator(nn.Module):
             if uni_spade_at_512:
                 # UNI SPADE conditioning at 512 level (uni_ch=32 at this scale)
                 self.dec1_conv = nn.Conv2d(dec1_in_ch, 64, 3, padding=1)
-                self.dec1_spade = SPADEBlock(64, uni_channels=32, class_dim=class_dim)
+                self.dec1_spade = SPADEBlock(64, uni_channels=32, class_dim=class_dim,
+                                              spatial_dim=(spatial_dim if use_spatial else 0))
                 self.dec1_act = nn.LeakyReLU(0.2, inplace=True)
             else:
                 self.dec1_conv = nn.Sequential(
@@ -196,12 +204,13 @@ class SPADEUNetGenerator(nn.Module):
         e4 = self.enc4(e3)
         return {1: e1, 2: e2, 3: e3, 4: e4}
 
-    def forward(self, he_images, uni_features, labels):
+    def forward(self, he_images, uni_features, labels, spatial_emb=None):
         """
         Args:
             he_images: [B, 3, H, H] in [-1, 1] where H=512 or H=1024
             uni_features: [B, N, 1024] where N=16 (4x4 CLS) or N=1024 (32x32 patch)
             labels: [B] int class labels (0-4)
+            spatial_emb: [B, spatial_dim] or None — GNN spatial context embedding
 
         Returns:
             output: [B, 3, H, H] in [-1, 1]
@@ -243,7 +252,7 @@ class SPADEUNetGenerator(nn.Module):
         skip5 = [x, e4] + ([edge_maps[32]] if edge_maps else [])
         x = torch.cat(skip5, dim=1)
         x = self.dec5_conv(x)
-        x = self.dec5_spade(x, uni_maps[32], class_emb)
+        x = self.dec5_spade(x, uni_maps[32], class_emb, spatial_emb=spatial_emb)
         x = self.dec5_act(x)
 
         # D4: upsample 32→64, skip from e3 + edge@64, UNI at 64
@@ -251,7 +260,7 @@ class SPADEUNetGenerator(nn.Module):
         skip4 = [x, e3] + ([edge_maps[64]] if edge_maps else [])
         x = torch.cat(skip4, dim=1)
         x = self.dec4_conv(x)
-        x = self.dec4_spade(x, uni_maps[64], class_emb)
+        x = self.dec4_spade(x, uni_maps[64], class_emb, spatial_emb=spatial_emb)
         x = self.dec4_act(x)
 
         # D3: upsample 64→128, skip from e2 + edge@128, UNI at 128
@@ -259,7 +268,7 @@ class SPADEUNetGenerator(nn.Module):
         skip3 = [x, e2] + ([edge_maps[128]] if edge_maps else [])
         x = torch.cat(skip3, dim=1)
         x = self.dec3_conv(x)
-        x = self.dec3_spade(x, uni_maps[128], class_emb)
+        x = self.dec3_spade(x, uni_maps[128], class_emb, spatial_emb=spatial_emb)
         x = self.dec3_act(x)
 
         # D2: upsample 128→256, skip from e1 + edge@256, UNI at 256
@@ -267,7 +276,7 @@ class SPADEUNetGenerator(nn.Module):
         skip2 = [x, e1] + ([edge_maps[256]] if edge_maps else [])
         x = torch.cat(skip2, dim=1)
         x = self.dec2_conv(x)
-        x = self.dec2_spade(x, uni_maps[256], class_emb)
+        x = self.dec2_spade(x, uni_maps[256], class_emb, spatial_emb=spatial_emb)
         x = self.dec2_act(x)
 
         if self.image_size == 1024:
@@ -277,7 +286,7 @@ class SPADEUNetGenerator(nn.Module):
             x = torch.cat(skip1, dim=1)
             x = self.dec1_conv(x)
             if self.dec1_spade is not None:
-                x = self.dec1_spade(x, uni_maps[512], class_emb)
+                x = self.dec1_spade(x, uni_maps[512], class_emb, spatial_emb=spatial_emb)
                 x = self.dec1_act(x)
             # [B, 64, 512, 512]
 
