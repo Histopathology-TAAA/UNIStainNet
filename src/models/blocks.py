@@ -37,14 +37,12 @@ class SPADEBlock(nn.Module):
         self.film_gamma = nn.Linear(class_dim, norm_channels)
         self.film_beta = nn.Linear(class_dim, norm_channels)
 
-        # Spatial: learn channel gamma/beta from GNN spatial embedding
+        # Spatial: learn channel gamma/beta from region context embedding
         if spatial_dim > 0:
             self.spatial_gamma = nn.Linear(spatial_dim, norm_channels)
             self.spatial_beta = nn.Linear(spatial_dim, norm_channels)
-            nn.init.zeros_(self.spatial_gamma.weight)
-            nn.init.zeros_(self.spatial_gamma.bias)
-            nn.init.zeros_(self.spatial_beta.weight)
-            nn.init.zeros_(self.spatial_beta.bias)
+            # Default PyTorch init (Xavier uniform) — gradient must flow
+            # through to the region encoder. Gradual activation via low LR.
         else:
             self.spatial_gamma = None
             self.spatial_beta = None
