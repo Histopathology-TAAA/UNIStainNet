@@ -13,6 +13,7 @@ Usage:
 """
 
 import argparse
+import torch
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
 from pytorch_lightning.loggers import WandbLogger
@@ -33,6 +34,8 @@ def main():
     parser.add_argument('--max_epochs', type=int, default=100)
     parser.add_argument('--wandb_name', type=str, default='mist_1024')
     parser.add_argument('--resume_from', type=str, default=None)
+    parser.add_argument('--pretrained_512_ckpt', type=str, default=None,
+                        help='Path to a 512-resolution checkpoint to initialize weights from')
     args = parser.parse_args()
 
     print("=" * 70)
@@ -126,6 +129,27 @@ def main():
         log_every_n_steps=10,
         val_check_interval=1.0,
     )
+
+    if args.pretrained_512_ckpt:
+        print(f"Loading pretrained 512 weights from {args.pretrained_512_ckpt}...")
+        ckpt = torch.load(args.pretrained_512_ckpt, map_location='cpu')
+        state_dict = ckpt['state_dict'] if 'state_dict' in ckpt else ckpt
+        # Filter out UNI model keys if they exist
+        keys_to_remove = [k for k in state_dict if k.startswith('_uni_model.')]
+        
+        # Filter out keys with shape mismatches (e.g. generator.output layers which change size from 512 to 1024)
+        model_state = model.state_dict()
+        for k, v in state_dict.items():
+            if k in model_state and v.shape != model_state[k].shape:
+                print(f"Skipping key {k} due to shape mismatch: {v.shape} vs {model_state[k].shape}")
+                keys_to_remove.append(k)
+                
+        for k in set(keys_to_remove):
+            if k in state_dict:
+                del state_dict[k]
+                
+        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+        print(f"Loaded pretrained weights. Missing keys: {len(missing)}, Unexpected keys: {len(unexpected)}")
 
     trainer.fit(model, dm, ckpt_path=args.resume_from)
     print("Training complete!")
