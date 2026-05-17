@@ -76,8 +76,9 @@ class SpatialGNN(nn.Module):
             nn.Linear(hidden_dim, output_dim),
         )
 
-        # Zero-initialize output projection for gradual activation
-        nn.init.zeros_(self.output_proj[-1].weight)
+        # Xavier-init output projection (zero-init would block gradient flow
+        # when combined with zero-init SPADE spatial_gamma/beta)
+        nn.init.xavier_uniform_(self.output_proj[-1].weight)
         nn.init.zeros_(self.output_proj[-1].bias)
 
     def forward(self, patch_features, positions, edge_index=None):

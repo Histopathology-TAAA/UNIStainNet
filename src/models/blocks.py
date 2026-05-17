@@ -41,10 +41,8 @@ class SPADEBlock(nn.Module):
         if spatial_dim > 0:
             self.spatial_gamma = nn.Linear(spatial_dim, norm_channels)
             self.spatial_beta = nn.Linear(spatial_dim, norm_channels)
-            nn.init.zeros_(self.spatial_gamma.weight)
-            nn.init.zeros_(self.spatial_gamma.bias)
-            nn.init.zeros_(self.spatial_beta.weight)
-            nn.init.zeros_(self.spatial_beta.bias)
+            # Xavier init (not zero) — gradient must flow through to GNN.
+            # Gradual activation is achieved via low finetuning LR (5e-5).
         else:
             self.spatial_gamma = None
             self.spatial_beta = None
