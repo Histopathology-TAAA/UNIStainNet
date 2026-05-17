@@ -49,10 +49,14 @@ class SpatialTrainer(UNIStainNetTrainer):
 
     Freezes encoder + bottleneck, adds GAT-based spatial message passing
     that conditions each patch's decoder on its spatial neighbors.
+
+    Uses absolute WSI coordinates (index/coord_x, index/coord_y) from
+    the HDF5 to build true spatial adjacency graphs. Filenames encode
+    HE indices: p{pid}_{stain}_{he_idx}_{ihc_idx}.
     """
 
     def __init__(self, gnn_hops=5, gnn_hidden=256, spatial_dim=64,
-                 grid_size=3, **kwargs):
+                 grid_size=3, h5_coord_x=None, h5_coord_y=None, **kwargs):
         # Force spatial flags in generator
         kwargs['use_spatial'] = True
         kwargs['spatial_dim'] = spatial_dim
@@ -60,12 +64,50 @@ class SpatialTrainer(UNIStainNetTrainer):
 
         self.gnn_hops = gnn_hops
         self.grid_size = grid_size
+
+        # Pre-loaded coordinate arrays from HDF5 (indexed by global HE index)
+        self.register_buffer('_coord_x', torch.as_tensor(h5_coord_x)
+                             if h5_coord_x is not None else torch.zeros(1))
+        self.register_buffer('_coord_y', torch.as_tensor(h5_coord_y)
+                             if h5_coord_y is not None else torch.zeros(1))
+
         self.gnn = SpatialGNN(
             feature_dim=512,
             hidden_dim=gnn_hidden,
             output_dim=spatial_dim,
             num_layers=gnn_hops,
         )
+
+    @staticmethod
+    def _parse_he_index(fname: str) -> int:
+        """Extract global HE index from filename.
+
+        Filename format: p{pid}_{stain}_{he_idx}_{ihc_idx}
+        Example: p0_HER2_42_15 → he_idx = 42
+        """
+        parts = fname.split('_')
+        return int(parts[2])
+
+    def _compute_positions(self, fnames, stride=1024.0):
+        """Build spatial positions from WSI coordinates.
+
+        Extracts HE indices from filenames, looks up absolute WSI
+        coordinates, normalizes relative to batch center.
+        """
+        he_indices = [self._parse_he_index(f) for f in fnames]
+        device = self._coord_x.device
+        idx = torch.tensor(he_indices, device=device, dtype=torch.long)
+
+        cx = self._coord_x[idx].float()
+        cy = self._coord_y[idx].float()
+
+        # Center on batch mean
+        cx = cx - cx.mean()
+        cy = cy - cy.mean()
+
+        # Scale to patch-grid units (1 unit ≈ 1 stride = 1 patch width apart)
+        positions = torch.stack([cx / stride, cy / stride], dim=1)
+        return positions
 
     def freeze_encoder(self):
         """Freeze encoder + bottleneck. Only decoder SPADE + GNN trained."""
@@ -124,8 +166,11 @@ class SpatialTrainer(UNIStainNetTrainer):
         return e5.mean(dim=[2, 3])  # [B, 512] global average pooled
 
     def training_step(self, batch, batch_idx):
-        he, ihc, uni_or_crops, labels, fnames, positions = batch
+        he, ihc, uni_or_crops, labels, fnames, _positions = batch
         opt_g, opt_d = self.optimizers()
+
+        # Replace dummy positions with real WSI-coordinate positions
+        positions = self._compute_positions(fnames)
 
         # On-the-fly UNI extraction
         if self._uni_extract_on_the_fly:
@@ -289,13 +334,14 @@ class SpatialTrainer(UNIStainNetTrainer):
         return loss_g
 
     def validation_step(self, batch, batch_idx):
-        he, ihc, uni_or_crops, labels, fnames, positions = batch
+        he, ihc, uni_or_crops, labels, fnames, _positions = batch
 
         if self._uni_extract_on_the_fly:
             uni = self._extract_uni_from_sub_crops(uni_or_crops)
         else:
             uni = uni_or_crops
 
+        positions = self._compute_positions(fnames)
         encoder_feats = self._get_encoder_features(he)
         spatial_emb = self.gnn(encoder_feats, positions)
 
@@ -338,6 +384,9 @@ def main():
     train_patients = [int(x) for x in args.train_patients.split(',')]
     val_patients = [int(x) for x in args.val_patients.split(',')]
 
+    # Load WSI coordinates from HDF5 (already stored by patching pipeline)
+    coord_x, coord_y = _load_coords_from_h5(args.h5_path)
+
     # Load Stage-1 checkpoint
     print(f"Loading Stage-1 checkpoint: {args.checkpoint}")
     model = SpatialTrainer.load_from_checkpoint(
@@ -346,6 +395,8 @@ def main():
         gnn_hidden=args.gnn_hidden,
         spatial_dim=args.spatial_dim,
         grid_size=args.grid_size,
+        h5_coord_x=coord_x,
+        h5_coord_y=coord_y,
         gen_lr=args.gen_lr,
         disc_lr=args.disc_lr,
         strict=False,  # GNN params don't exist in Stage-1 ckpt
@@ -374,11 +425,43 @@ def main():
         augment=False,
     )
 
-    train_loader = DataLoader(
-        train_ds, batch_size=args.grid_size ** 2,
-        shuffle=True, num_workers=4, pin_memory=True,
-        collate_fn=lambda b: spatial_collate_fn(b, grid_size=args.grid_size),
-    )
+    # SpatialGridSampler arranges indices so every grid_size**2
+    # consecutive items form a spatially adjacent group.
+    from src.data.spatial_sampler import SpatialGridSampler
+    from torch.utils.data import BatchSampler
+
+    if args.grid_size > 1:
+        try:
+            train_sampler = SpatialGridSampler(
+                args.h5_path, args.stains, train_patients,
+                grid_size=args.grid_size,
+                samples_per_epoch=len(train_ds) // (args.grid_size ** 2),
+            )
+            train_batch = BatchSampler(
+                train_sampler, batch_size=args.grid_size ** 2, drop_last=True
+            )
+            train_loader = DataLoader(
+                train_ds, batch_sampler=train_batch, num_workers=4,
+                pin_memory=True, collate_fn=lambda b: spatial_collate_fn(
+                    b, grid_size=args.grid_size),
+            )
+            print("Using SpatialGridSampler for true spatial adjacency")
+        except ValueError as e:
+            print(f"WARNING: {e}")
+            print("Falling back to random shuffle (no spatial grouping)")
+            train_loader = DataLoader(
+                train_ds, batch_size=args.grid_size ** 2,
+                shuffle=True, num_workers=4, pin_memory=True,
+                collate_fn=lambda b: spatial_collate_fn(
+                    b, grid_size=args.grid_size),
+            )
+    else:
+        train_loader = DataLoader(
+            train_ds, batch_size=1, shuffle=True,
+            num_workers=4, pin_memory=True,
+            collate_fn=lambda b: spatial_collate_fn(b, grid_size=1),
+        )
+
     val_loader = DataLoader(
         val_ds, batch_size=args.grid_size ** 2,
         shuffle=False, num_workers=4, pin_memory=True,
@@ -403,6 +486,20 @@ def main():
         precision='16-mixed',
     )
     trainer.fit(model, train_loader, val_loader)
+
+
+def _load_coords_from_h5(h5_path):
+    """Load HE patch coordinates from HDF5 index.
+
+    Returns (coord_x, coord_y) as numpy int32 arrays indexed by global
+    HE patch index.
+    """
+    import h5py
+    with h5py.File(h5_path, 'r') as f:
+        cx = f['index/coord_x'][:]
+        cy = f['index/coord_y'][:]
+    print(f"Loaded coordinates for {len(cx)} HE patches from HDF5")
+    return cx, cy
 
 
 if __name__ == '__main__':
