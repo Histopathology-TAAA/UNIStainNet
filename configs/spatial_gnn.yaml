@@ -1,0 +1,41 @@
+# Per-stain GNN configuration for Stage-2 spatial finetuning.
+#
+# Each stain gets a dedicated GNN hop count matching its biological
+# spatial scale:
+#   ER   = 3 hops (~1.5 mm at 10X, 512px) — homogeneous nuclear, local
+#   PR   = 3 hops — same compartment logic as ER, neighbor consistency
+#   HER2 = 5 hops (~2.5 mm) — membrane completeness needs architectural
+#          context: tumor-stroma boundaries, gland architecture, DCIS/IDC
+#   KI67 = 7 hops (~3.5 mm) — hotspot vs cold spot calibration across
+#          wide regions
+
+spatial_dim: 64
+gnn_hidden_dim: 256
+gnn_heads: 4
+gnn_dropout: 0.1
+
+stains:
+  ER:
+    hops: 3
+    grid_size: 3
+    description: "Nuclear — homogeneous within tumor, local compartment consistency"
+  PR:
+    hops: 3
+    grid_size: 3
+    description: "Nuclear — weaker signal, neighbor consistency for stability"
+  HER2:
+    hops: 5
+    grid_size: 5
+    description: "Membrane — architectural context for tumor-stroma boundaries"
+  KI67:
+    hops: 7
+    grid_size: 7
+    description: "Nuclear proliferation — hotspot vs cold spot calibration"
+
+# Training settings
+training:
+  gen_lr: 5.0e-5
+  disc_lr: 2.0e-4
+  max_epochs: 50
+  # Use max_hops for multi-stain training (shared model)
+  shared_gnn_hops: 7
