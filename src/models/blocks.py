@@ -12,15 +12,17 @@ import torch.nn.functional as F
 
 
 class SPADEBlock(nn.Module):
-    """SPADE + FiLM normalization block.
+    """SPADE + FiLM + optional Spatial modulation block.
 
     Combines spatially-adaptive normalization from UNI features (SPADE)
-    with channel-wise affine modulation from class embedding (FiLM).
+    with channel-wise affine modulation from class embedding (FiLM)
+    and optional spatial context from a GNN (Spatial).
     """
 
-    def __init__(self, norm_channels, uni_channels, class_dim=64):
+    def __init__(self, norm_channels, uni_channels, class_dim=64, spatial_dim=0):
         super().__init__()
         self.norm = nn.InstanceNorm2d(norm_channels, affine=False)
+        self.spatial_dim = spatial_dim
 
         # SPADE: learn spatial gamma/beta from UNI features
         hidden = min(128, norm_channels)
@@ -35,6 +37,18 @@ class SPADEBlock(nn.Module):
         self.film_gamma = nn.Linear(class_dim, norm_channels)
         self.film_beta = nn.Linear(class_dim, norm_channels)
 
+        # Spatial: learn channel gamma/beta from GNN spatial embedding
+        if spatial_dim > 0:
+            self.spatial_gamma = nn.Linear(spatial_dim, norm_channels)
+            self.spatial_beta = nn.Linear(spatial_dim, norm_channels)
+            nn.init.zeros_(self.spatial_gamma.weight)
+            nn.init.zeros_(self.spatial_gamma.bias)
+            nn.init.zeros_(self.spatial_beta.weight)
+            nn.init.zeros_(self.spatial_beta.bias)
+        else:
+            self.spatial_gamma = None
+            self.spatial_beta = None
+
         # Init SPADE gamma/beta near zero (ControlNet-style gradual activation)
         nn.init.zeros_(self.spade_gamma.weight)
         nn.init.zeros_(self.spade_gamma.bias)
@@ -47,12 +61,13 @@ class SPADEBlock(nn.Module):
         nn.init.zeros_(self.film_beta.weight)
         nn.init.zeros_(self.film_beta.bias)
 
-    def forward(self, x, uni_spatial, class_emb):
+    def forward(self, x, uni_spatial, class_emb, spatial_emb=None):
         """
         Args:
             x: [B, C, H, W] feature map
             uni_spatial: [B, uni_ch, H, W] UNI features at matching resolution
             class_emb: [B, class_dim] class embedding
+            spatial_emb: [B, spatial_dim] or None — GNN spatial context embedding
         """
         normalized = self.norm(x)
 
@@ -62,11 +77,19 @@ class SPADEBlock(nn.Module):
         beta_s = self.spade_beta(shared)
 
         # FiLM modulation from class
-        gamma_c = self.film_gamma(class_emb).unsqueeze(-1).unsqueeze(-1)  # [B, C, 1, 1]
+        gamma_c = self.film_gamma(class_emb).unsqueeze(-1).unsqueeze(-1)
         beta_c = self.film_beta(class_emb).unsqueeze(-1).unsqueeze(-1)
 
-        # Combined: (gamma_spade + gamma_film) * norm(x) + (beta_spade + beta_film)
-        return (gamma_s + gamma_c) * normalized + (beta_s + beta_c)
+        # Spatial modulation from GNN (if enabled)
+        if spatial_emb is not None and self.spatial_gamma is not None:
+            gamma_sp = self.spatial_gamma(spatial_emb).unsqueeze(-1).unsqueeze(-1)
+            beta_sp = self.spatial_beta(spatial_emb).unsqueeze(-1).unsqueeze(-1)
+        else:
+            gamma_sp = 0.0
+            beta_sp = 0.0
+
+        # Combined: (gamma_spade + gamma_film + gamma_spatial) * norm(x) + ...
+        return (gamma_s + gamma_c + gamma_sp) * normalized + (beta_s + beta_c + beta_sp)
 
 
 class ResBlock(nn.Module):
