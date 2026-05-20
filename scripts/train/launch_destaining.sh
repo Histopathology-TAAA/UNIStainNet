@@ -149,6 +149,19 @@ python scripts/train/train_mist.py \
     --wandb_name destaining_v2_attention_batch8 \
     --resume_from "$HOME/checkpoints/destaining_v2/last.ckpt"
 
+
+
+# last run
+
+PYTHONPATH=. python scripts/train/train_mist.py \    
+    --data_dir   "/home/ahmed_ayman/data/Destained_MIST" \
+    --stains     ER PR \
+    --batch_size 2      \
+    --accum_steps 4      \
+    --max_epochs 100      \
+    --ckpt_dir   "./checkpoints/destaining_v2"     \
+    --wandb_name destaining_v2_attention_batch4_ER_PR_Only
+
 # To upload a model to hf
 # hf upload asserelzeki/destained_v1_UNIStainnet_v2 ./checkpoints/destaining_v2/mist_epoch=002_step=010973.ckpt
 # hf upload asserelzeki/destained_UNIStainnet_v2 ./checkpoints/destaining_v2/mist_epoch=002_step=010973.ckpt

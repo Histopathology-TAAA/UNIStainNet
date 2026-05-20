@@ -34,6 +34,8 @@ def main():
                         help='Checkpoint save directory')
     parser.add_argument('--batch_size', type=int, default=16,
                         help='Batch size (16 for 80GB A100, 8 for 40GB)')
+    parser.add_argument('--accum_steps', type=int, default=1,
+                        help='Gradient accumulation steps (e.g., set to 2 for effective batch size 8 if physical is 4)')
     parser.add_argument('--max_epochs', type=int, default=100,
                         help='Max epochs')
     parser.add_argument('--wandb_name', type=str, default='mist_multistain',
@@ -199,7 +201,8 @@ def main():
     lr_monitor = LearningRateMonitor(logging_interval='step')
 
     wandb_logger = WandbLogger(
-        project='Destaining-UNIStainNet-V1',
+        project='Destaining-UNIStainNet-V2-ER-PR-Only',
+        # entity='histo-TAAAA',
         name=args.wandb_name,
         save_dir='wandb',
     )
@@ -213,6 +216,7 @@ def main():
         logger=wandb_logger,
         log_every_n_steps=10,
         val_check_interval=1.0,
+        # accumulate_grad_batches=args.accum_steps,
     )
 
     trainer.fit(model, dm, ckpt_path=args.resume_from)
