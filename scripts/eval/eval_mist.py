@@ -103,24 +103,32 @@ def generate_for_stain(model, uni_model, dataloader, stain_label, guidance_scale
     all_gen, all_real, all_he, all_fnames = [], [], [], []
 
     for batch_idx, batch in enumerate(tqdm(dataloader, desc=f"Generating")):
-        he, her2, uni_sub_crops, labels, fnames = batch
-        he, her2 = he.cuda().float(), her2.cuda().float()
+        he_rgb, ihc_rgb, he_h_map, ihc_h_map, he_e_map, labels, fnames = batch
+        he_rgb = he_rgb.cuda().float()
+        ihc_rgb = ihc_rgb.cuda().float()
+        he_h_map = he_h_map.cuda().float()
+        he_e_map = he_e_map.cuda().float()
 
         # Override labels with stain label
-        stain_labels = torch.full((he.size(0),), stain_label, device='cuda', dtype=torch.long)
+        stain_labels = torch.full((he_rgb.size(0),), stain_label, device='cuda', dtype=torch.long)
 
         # Extract UNI features
-        he_01 = ((he + 1) / 2).clamp(0, 1)
+        he_01 = ((he_rgb + 1) / 2).clamp(0, 1)
         uni = extract_features_for_crop(uni_model, he_01,
                                         spatial_pool_size=spatial_pool_size).cuda()
 
-        gen = model.generate(he, uni, stain_labels,
-                             guidance_scale=guidance_scale,
-                             seed=seed + batch_idx)
+        gen = model.generate(
+            he_h_map,
+            uni,
+            stain_labels,
+            e_maps=he_e_map,
+            guidance_scale=guidance_scale,
+            seed=seed + batch_idx,
+        )
 
         all_gen.append(gen.cpu())
-        all_real.append(her2.cpu())
-        all_he.append(he.cpu())
+        all_real.append(ihc_rgb.cpu())
+        all_he.append(he_rgb.cpu())
         all_fnames.extend(fnames)
 
     return torch.cat(all_gen), torch.cat(all_real), torch.cat(all_he), all_fnames

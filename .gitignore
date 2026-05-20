@@ -6,6 +6,12 @@ dist/
 build/
 *.egg
 
+# Python virtual environments
+.venv/
+venv/
+env/
+ENV/
+
 wandb/
 checkpoints/
 eval_output/
