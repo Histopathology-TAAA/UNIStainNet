@@ -57,6 +57,7 @@ class UNIStainNetTrainer(pl.LightningModule):
         gen_lr=1e-4,
         disc_lr=4e-4,
         warmup_steps=1000,
+        accum_steps=1,
         # Loss weights
         lpips_weight=1.0,
         lpips_256_weight=0.5,
@@ -146,6 +147,7 @@ class UNIStainNetTrainer(pl.LightningModule):
         super().__init__()
         self.save_hyperparameters()
         self.automatic_optimization = False
+        self._grad_accum_steps = max(1, int(accum_steps))
 
         self.null_class = null_class
 
@@ -285,6 +287,17 @@ class UNIStainNetTrainer(pl.LightningModule):
         if self.global_step < self.hparams.warmup_steps:
             return self.global_step / max(1, self.hparams.warmup_steps)
         return 1.0
+
+    def _is_last_train_batch(self, batch_idx: int) -> bool:
+        """Best-effort last-batch detection for flushing accumulated grads."""
+        total_batches = getattr(self.trainer, 'num_training_batches', None)
+        if not isinstance(total_batches, int) or total_batches <= 0:
+            return False
+        return (batch_idx + 1) >= total_batches
+
+    def _should_step_optimizer(self, batch_idx: int) -> bool:
+        """Step optimizer on accumulation boundary or at final batch."""
+        return ((batch_idx + 1) % self._grad_accum_steps == 0) or self._is_last_train_batch(batch_idx)
 
     @torch.no_grad()
     def _update_ema(self):
@@ -972,13 +985,14 @@ class UNIStainNetTrainer(pl.LightningModule):
         for pg in opt_g.param_groups:
             pg['lr'] = self.hparams.gen_lr * lr_scale
 
-        opt_g.zero_grad()
-        self.manual_backward(loss_g)
-        torch.nn.utils.clip_grad_norm_(self.generator.parameters(), 1.0)
-        opt_g.step()
-
-        # Update EMA
-        self._update_ema()
+        if batch_idx % self._grad_accum_steps == 0:
+            opt_g.zero_grad()
+        self.manual_backward(loss_g / self._grad_accum_steps)
+        if self._should_step_optimizer(batch_idx):
+            torch.nn.utils.clip_grad_norm_(self.generator.parameters(), 1.0)
+            opt_g.step()
+            # Update EMA only when generator weights are stepped.
+            self._update_ema()
 
         # ----------------------------------------------------------------
         # Discriminator step
@@ -1069,17 +1083,19 @@ class UNIStainNetTrainer(pl.LightningModule):
                 loss_d = loss_d + loss_r1
                 self.log('train/r1_penalty', loss_r1, prog_bar=False)
 
-            opt_d.zero_grad()
-            self.manual_backward(loss_d)
-            if self.hparams.adversarial_weight > 0:
-                torch.nn.utils.clip_grad_norm_(self.discriminator.parameters(), 1.0)
-            if self.crop_discriminator is not None:
-                torch.nn.utils.clip_grad_norm_(self.crop_discriminator.parameters(), 1.0)
-            if self.uncond_discriminator is not None:
-                torch.nn.utils.clip_grad_norm_(self.uncond_discriminator.parameters(), 1.0)
-            if self.proj_discriminator is not None:
-                torch.nn.utils.clip_grad_norm_(self.proj_discriminator.parameters(), 1.0)
-            opt_d.step()
+            if batch_idx % self._grad_accum_steps == 0:
+                opt_d.zero_grad()
+            self.manual_backward(loss_d / self._grad_accum_steps)
+            if self._should_step_optimizer(batch_idx):
+                if self.hparams.adversarial_weight > 0:
+                    torch.nn.utils.clip_grad_norm_(self.discriminator.parameters(), 1.0)
+                if self.crop_discriminator is not None:
+                    torch.nn.utils.clip_grad_norm_(self.crop_discriminator.parameters(), 1.0)
+                if self.uncond_discriminator is not None:
+                    torch.nn.utils.clip_grad_norm_(self.uncond_discriminator.parameters(), 1.0)
+                if self.proj_discriminator is not None:
+                    torch.nn.utils.clip_grad_norm_(self.proj_discriminator.parameters(), 1.0)
+                opt_d.step()
 
         # Logging
         self.log('train/loss_g', loss_g, prog_bar=True)

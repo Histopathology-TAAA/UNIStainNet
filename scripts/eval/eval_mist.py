@@ -31,8 +31,7 @@ import numpy as np
 from tqdm import tqdm
 
 from src.models.trainer import UNIStainNetTrainer
-from src.data.bci_dataset import MISTCropDataModule
-from src.data.mist_dataset import STAIN_TO_LABEL
+from src.data.mist_dataset import STAIN_TO_LABEL, MISTMultiStainCropDataModule
 from src.utils.dab import DABExtractor
 from src.utils.metrics import (
     compute_image_quality_metrics,
@@ -191,15 +190,15 @@ def main():
         print(f"EVALUATING: {stain} (label={stain_label})")
         print(f"{'='*50}")
 
-        # Data for this stain
-        stain_data_dir = Path(args.data_dir) / stain / 'TrainValAB'
-        dm = MISTCropDataModule(
-            data_dir=str(stain_data_dir),
+        # Data for this stain (single-stain view over multi-stain datamodule)
+        dm = MISTMultiStainCropDataModule(
+            base_dir=args.data_dir,
+            stains=[stain],
             batch_size=args.batch_size,
             num_workers=4,
             image_size=(512, 512),
             crop_size=512,
-            null_class=stain_label,  # Use stain label as the "class"
+            null_class=4,
         )
         dm.setup('test')
         test_loader = dm.test_dataloader()
@@ -249,7 +248,7 @@ def main():
 
         # Print per-stain summary
         iq = stain_results['image_quality']
-          structure = stain_results['structure']
+        structure = stain_results['structure']
         dab = stain_results['dab']
         print(f"\n  {stain}: FID={iq['fid_inception']:.1f} | "
               f"KID={iq['kid_mean_x1000']:.1f} | "
@@ -304,7 +303,7 @@ def main():
     print(header)
     print("-" * len(header))
 
-    for key in metric_keys + dab_keys + iod_keys:
+    for key in metric_keys + dab_keys + structure_keys + iod_keys:
         row = f"{key:<20s}"
         for s in args.stains:
             if key in ['fid_inception', 'kid_mean_x1000']:
