@@ -27,6 +27,7 @@ from src.data.mist_dataset import STAIN_TO_LABEL
 from src.utils.dab import DABExtractor
 from src.utils.metrics import (
     compute_image_quality_metrics,
+    compute_he_structure_metrics,
     compute_uni_fid,
     compute_dab_metrics,
     compute_iod_metrics,
@@ -210,6 +211,9 @@ def main():
         print(f"  Computing image quality metrics...")
         stain_results['image_quality'] = compute_image_quality_metrics(gen, real)
 
+        print(f"  Computing H&E structure metrics...")
+        stain_results['structure'] = compute_he_structure_metrics(gen, he)
+
         print(f"  Computing DAB metrics...")
         stain_results['dab'] = compute_dab_metrics(gen, real, labels=None, dab_extractor=dab_extractor)
 
@@ -226,11 +230,13 @@ def main():
         results['per_stain'][stain] = stain_results
 
         iq = stain_results['image_quality']
+          structure = stain_results['structure']
         dab = stain_results['dab']
         print(f"\n  {stain}: FID={iq['fid_inception']:.1f} | "
               f"KID={iq['kid_mean_x1000']:.1f} | "
               f"LPIPS={iq['lpips_mean']:.3f} | "
               f"SSIM={iq['ssim_mean']:.3f} | "
+              f"H&E-Struct={structure['he_structure_ssim']:.3f} | "
               f"Pearson-r={dab.get('dab_pearson_r', 0):.3f}")
 
     del uni_model
@@ -244,6 +250,7 @@ def main():
     metric_keys = ['fid_inception', 'kid_mean_x1000', 'lpips_mean', 'lpips_128_mean',
                     'ssim_mean', 'psnr_mean']
     dab_keys = ['dab_mae_overall', 'dab_pearson_r', 'dab_kl', 'dab_jsd']
+    structure_keys = ['he_structure_ssim']
     iod_keys = ['miod_diff', 'miod_abs_diff']
 
     macro = {}
@@ -254,6 +261,11 @@ def main():
 
     for key in dab_keys:
         vals = [results['per_stain'][s]['dab'].get(key, float('nan'))
+                for s in args.stains]
+        macro[key] = float(np.mean([v for v in vals if not np.isnan(v)]))
+
+    for key in structure_keys:
+        vals = [results['per_stain'][s]['structure'].get(key, float('nan'))
                 for s in args.stains]
         macro[key] = float(np.mean([v for v in vals if not np.isnan(v)]))
 
@@ -278,6 +290,8 @@ def main():
                 src = 'image_quality'
             elif key.startswith('dab'):
                 src = 'dab'
+            elif key.startswith('he_structure'):
+                src = 'structure'
             else:
                 src = 'iod'
             val = results['per_stain'][s][src].get(key, float('nan'))

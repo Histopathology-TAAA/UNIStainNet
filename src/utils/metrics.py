@@ -142,6 +142,54 @@ def compute_image_quality_metrics(generated, real):
 
 
 # ======================================================================
+# H&E structure similarity vs generated IHC
+# ======================================================================
+
+def compute_he_structure_metrics(generated, he_reference, resize_to=256):
+    """Structural similarity between generated IHC and H&E reference.
+
+    This metric is designed to answer: do the generated IHC and the H&E input
+    preserve similar tissue structure? It ignores stain color by converting both
+    images to grayscale, then compares Sobel edge maps with SSIM.
+
+    Args:
+        generated: [N, 3, H, W] in [-1, 1]
+        he_reference: [N, 3, H, W] in [-1, 1]
+        resize_to: spatial size used before edge extraction
+
+    Returns:
+        dict with a single key:
+            - he_structure_ssim: SSIM between normalized edge maps (higher is better)
+    """
+    from torchmetrics.image import StructuralSimilarityIndexMeasure
+
+    gen = F.interpolate(generated.float(), size=resize_to, mode='bilinear', align_corners=False)
+    he = F.interpolate(he_reference.float(), size=resize_to, mode='bilinear', align_corners=False)
+
+    gen_gray = gen.mean(dim=1, keepdim=True)
+    he_gray = he.mean(dim=1, keepdim=True)
+
+    sobel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]],
+                           dtype=torch.float32, device=gen.device).view(1, 1, 3, 3)
+    sobel_y = sobel_x.transpose(-1, -2)
+
+    def _edge_map(x):
+        gx = F.conv2d(x, sobel_x, padding=1)
+        gy = F.conv2d(x, sobel_y, padding=1)
+        edge = (gx ** 2 + gy ** 2 + 1e-8).sqrt()
+        edge = edge / (edge.amax(dim=(1, 2, 3), keepdim=True) + 1e-8)
+        return edge.clamp(0, 1)
+
+    gen_edge = _edge_map(gen_gray)
+    he_edge = _edge_map(he_gray)
+
+    ssim = StructuralSimilarityIndexMeasure(data_range=1.0)
+    return {
+        'he_structure_ssim': float(ssim(gen_edge, he_edge).item()),
+    }
+
+
+# ======================================================================
 # UNI-FID (pathology-native Frechet distance)
 # ======================================================================
 
