@@ -33,6 +33,7 @@ from src.data.bci_dataset import BCICropDataModule
 from src.utils.dab import DABExtractor
 from src.utils.metrics import (
     compute_image_quality_metrics,
+    compute_he_structure_metrics,
     compute_uni_fid,
     compute_dab_metrics,
     compute_iod_metrics,
@@ -220,6 +221,10 @@ def main():
     print("\nComputing image quality metrics...")
     results['image_quality'] = compute_image_quality_metrics(gen, real)
 
+    # H&E structure similarity (generated IHC vs input H&E)
+    print("Computing H&E structure SSIM...")
+    results['structure'] = compute_he_structure_metrics(gen, he)
+
     # DAB metrics (with per-class breakdown)
     print("Computing DAB metrics...")
     dab_extractor = DABExtractor(device='cpu')
@@ -255,6 +260,7 @@ def main():
 
     # Summary
     iq = results['image_quality']
+    structure = results.get('structure', {})
     dab = results.get('dab', {})
     iod = results.get('iod', {})
     ds = results.get('downstream', {})
@@ -271,6 +277,10 @@ def main():
     print(f"  LPIPS (128):         {iq['lpips_128_mean']:.4f}")
     print(f"  SSIM:                {iq['ssim_mean']:.4f}")
     print(f"  PSNR:                {iq['psnr_mean']:.2f}")
+
+    if structure:
+        print(f"\n--- H&E Structure ---")
+        print(f"  H&E structure SSIM:  {structure['he_structure_ssim']:.4f}")
 
     if dab:
         print(f"\n--- DAB Staining ---")
