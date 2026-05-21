@@ -57,16 +57,14 @@ class RegionEncoder(nn.Module):
         )
         # Feature map: [B, output_dim, 32, 32]
 
-        # Project RoI features to a flat spatial embedding.
-        # SpatialAdaptive pooling preserves SOME layout while being compact:
-        # [B, C, R, R] → AdaptiveAvgPool2d(2) → [B, C, 2, 2] → flatten → [B, C*4]
-        # → fc → [B, spatial_dim]
-        # This is better than global average pool because it retains
-        # coarse spatial structure (e.g., "left half is tumor, right half stroma")
-        # while still outputting a flat vector for the current SPADE interface.
-        self.roi_pool = nn.AdaptiveAvgPool2d((2, 2))
+        # Project the full RoI to a flat spatial embedding.
+        # The 8×8 RoI (~4mm of tissue context) is flattened directly:
+        # [B, C, 8, 8] → flatten [B, C*64] → fc → ReLU → fc → [B, spatial_dim]
+        # No intermediate pooling — the projector sees the full spatial
+        # layout and learns to extract compartment-relevant features.
+        roi_flat_dim = output_dim * roi_size * roi_size  # 64 * 64 = 4096
         self.roi_projector = nn.Sequential(
-            nn.Linear(output_dim * 4, spatial_dim * 2),
+            nn.Linear(roi_flat_dim, spatial_dim * 2),
             nn.ReLU(inplace=True),
             nn.Linear(spatial_dim * 2, spatial_dim),
         )
@@ -75,7 +73,7 @@ class RegionEncoder(nn.Module):
         print(f"RegionEncoder: {n_params:,} params, "
               f"feature map {output_dim}×32×32, "
               f"RoIAlign {roi_size}×{roi_size} over {roi_cells}×{roi_cells} cells, "
-              f"project to {spatial_dim}d")
+              f"project {roi_flat_dim} → {spatial_dim}d")
 
     def forward(self, thumbnail):
         """Encode WSI thumbnail.
@@ -134,11 +132,7 @@ class RegionEncoder(nn.Module):
         )  # [B, C, roi_size, roi_size]
 
     def get_region_emb(self, feature_map, norm_x, norm_y):
-        """RoIAlign → spatial pool → project → flat embedding.
-
-        The AdaptiveAvgPool2d(2,2) preserves coarse layout (e.g. "tumor
-        on left, stroma on right") while producing a compact flat vector
-        that the current SPADEBlock interface accepts.
+        """RoIAlign → flatten → project → flat embedding.
 
         Args:
             feature_map: [B, C, 32, 32]
@@ -148,6 +142,5 @@ class RegionEncoder(nn.Module):
             region_emb: [B, spatial_dim] flat spatial conditioning vector
         """
         roi = self.sample_region(feature_map, norm_x, norm_y)   # [B, C, R, R]
-        pooled = self.roi_pool(roi)                              # [B, C, 2, 2]
-        flat = pooled.flatten(1)                                 # [B, C*4]
+        flat = roi.flatten(1)                                    # [B, C*R*R]
         return self.roi_projector(flat)                          # [B, spatial_dim]
