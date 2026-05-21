@@ -107,37 +107,41 @@ class RPNTrainer(UNIStainNetTrainer):
         return feat_map
 
     def _get_region_emb(self, fnames):
-        """Compute region embeddings for a batch of samples.
+        """Compute region embeddings for a batch.
 
-        Parses patient_id and he_idx from filenames, loads thumbnails,
-        and bilinearly samples region context at each patch position.
+        Per sample: load thumbnail (cached) → get feature map →
+        RoIAlign around patch position → pool → project → flat vector.
         """
         device = self.device
-        B = len(fnames)
-        embs = []
+        nxs, nys = [], []
+        feat_maps = []
 
         for fname in fnames:
             # Parse: p{pid}_{stain}_{he_idx}_{ihc_idx}
             parts = fname.split('_')
-            pid = int(parts[0][1:])   # strip leading 'p'
+            pid = int(parts[0][1:])
             he_idx = int(parts[2])
 
-            feat_map = self._get_thumbnail(pid)
+            feat_maps.append(self._get_thumbnail(pid))
 
-            # Normalize position
             w = self._wsi_widths.get(pid, 1)
             h = self._wsi_heights.get(pid, 1)
-            cx = self._coord_x[he_idx].float() / w
-            cy = self._coord_y[he_idx].float() / h
+            nxs.append((self._coord_x[he_idx].float() / w).to(device))
+            nys.append((self._coord_y[he_idx].float() / h).to(device))
 
-            emb = self.region_encoder.sample(
-                feat_map,
-                torch.tensor([cx], device=device),
-                torch.tensor([cy], device=device),
+        # Batch samples from same WSI share feature maps.
+        # For samples from different WSIs, process per unique feature map.
+        # Simple approach: one forward per sample (tiny CNN, negligible overhead).
+        embs = []
+        for i, (nx, ny) in enumerate(zip(nxs, nys)):
+            emb = self.region_encoder.get_region_emb(
+                feat_maps[i],
+                nx.unsqueeze(0),   # [1]
+                ny.unsqueeze(0),   # [1]
             )
             embs.append(emb)
 
-        return torch.cat(embs, dim=0)  # [B, region_dim]
+        return torch.cat(embs, dim=0)  # [B, spatial_dim]
 
     def freeze_encoder(self):
         """Freeze encoder + bottleneck + UNI processor."""
