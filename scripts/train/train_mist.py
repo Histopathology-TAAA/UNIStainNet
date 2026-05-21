@@ -83,11 +83,6 @@ def main():
                              'v2 enables multi-scale Sobel.')
     args = parser.parse_args()
 
-    if args.accum_steps < 1:
-        parser.error('--accum_steps must be >= 1')
-
-    effective_batch_size = args.batch_size * args.accum_steps
-
     print("=" * 70)
     print(f"TRAINING: Unified Multi-Stain UNIStainNet")
     print(f"  Stains: {args.stains}")
@@ -97,9 +92,6 @@ def main():
     print(f"  enable_attention_residual: {args.enable_attention_residual}")
     print(f"  spade_use_uni: {args.spade_use_uni}")
     print(f"  edge_encoder: {args.edge_encoder}")
-    print(f"  grad_accum_steps: {args.accum_steps}")
-    print(f"  batch_size (physical): {args.batch_size}")
-    print(f"  batch_size (effective): {effective_batch_size}")
     print("=" * 70)
 
     # -------------------------------------------------------------------------
@@ -160,7 +152,6 @@ def main():
         gen_lr=1e-4,
         disc_lr=4e-4,
         warmup_steps=1000,
-        accum_steps=args.accum_steps,
         # Loss weights (centralized)
         **LOSS_WEIGHTS,
         # GAN training
@@ -225,6 +216,7 @@ def main():
         logger=wandb_logger,
         log_every_n_steps=10,
         val_check_interval=1.0,
+        # accumulate_grad_batches=args.accum_steps,
     )
 
     trainer.fit(model, dm, ckpt_path=args.resume_from)
