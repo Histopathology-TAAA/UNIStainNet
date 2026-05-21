@@ -162,6 +162,36 @@ PYTHONPATH=. python scripts/train/train_mist.py \
     --ckpt_dir   "./checkpoints/destaining_v2"     \
     --wandb_name destaining_v2_attention_batch4_ER_PR_Only
 
+
+# for evaluation 
+PYTHONPATH=. python scripts/eval/eval_mist.py \
+  --checkpoint "/home/ahmed_ayman/data/Models Checkpoints/UNIStainNet/Destaining_v2_ER_PR/mist_epoch=086_step=358703.ckpt" \
+  --data_dir "/home/ahmed_ayman/data/Destained_MIST" \
+  --stains ER PR \
+  --batch_size 4 \
+  --output_dir "./eval_output/destaining_v2_ER_PR"
+
+PYTHONPATH=. python scripts/eval/eval_mist.py \
+  --checkpoint "./checkpoints/destaining_v2/last.ckpt" \
+  --data_dir "/home/ahmed_ayman/data/Destained_MIST" \
+  --stains ER PR \
+  --batch_size 4 \
+  --output_dir "./eval_output/destaining_v2_ER_PR_Full"
+
+
+# Run 2
+source .venv/bin/activate
+PYTHONPATH=. python scripts/train/train_mist.py \
+    --data_dir "/home/ahmed_ayman/data/Destained_MIST" \
+    --stains ER PR \
+    --batch_size 4 \
+    --accum_steps 2 \
+    --ckpt_dir "checkpoints/destaining_v2_attn_spade" \
+    --edge_encoder v2 \
+    --disable_attention_residual \
+    --use_eosin_encoder \
+    --use_attention_for_spade   \
+    --wandb_name destaining_v2_attention_batch4_ER_PR_Only_attn_spade_and_residual 
 # To upload a model to hf
 # hf upload asserelzeki/destained_v1_UNIStainnet_v2 ./checkpoints/destaining_v2/mist_epoch=002_step=010973.ckpt
 # hf upload asserelzeki/destained_UNIStainnet_v2 ./checkpoints/destaining_v2/mist_epoch=002_step=010973.ckpt
