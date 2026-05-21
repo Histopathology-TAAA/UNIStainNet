@@ -17,7 +17,7 @@ set -e   # stop immediately on any error
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # 2. Default Variables
-ZIP_DIR="$REPO_DIR/Destained_Results"
+ZIP_DIR="./Destained_Results"
 STAINS="ER PR"
 # STAINS="HER2 ER Ki67 PR"
 
@@ -34,7 +34,7 @@ done
 echo "Selected stains: $STAINS"
 
 # 4. Set internal directories (strictly inside the repo folder)
-DATA_DIR="../data/Destained_MIST"
+DATA_DIR="./data/MIST"
 CKPT_DIR="./checkpoints/destaining_v2_ER_PR_Only"
 
 echo "========================================================"
@@ -169,12 +169,24 @@ echo "========================================================"
 
 mkdir -p "$CKPT_DIR"
 
-python scripts/train/train_mist.py \
+# python scripts/train/train_mist.py \
+#     --data_dir   "$DATA_DIR" \
+#     --stains     $STAINS \
+#     --batch_size 8 \
+#     --max_epochs 100 \
+#     --ckpt_dir   "$CKPT_DIR" \
+#     --wandb_name destaining_v1_attention_batch8_${STAINS// /_}
+
+PYTHONPATH=. python scripts/train/train_mist.py \
     --data_dir   "$DATA_DIR" \
     --stains     $STAINS \
     --batch_size 8 \
-    --max_epochs 100 \
-    --ckpt_dir   "$CKPT_DIR" \
-    --wandb_name destaining_v1_attention_batch8_${STAINS// /_}
+    --ckpt_dir "checkpoints/destaining_v2_attn_residual_only" \
+    --edge_encoder v2 \
+    --enable_attention_residual \
+    --use_eosin_encoder \
+    --no_spade_use_uni \
+    --no_use_attention_for_spade  \
+    --wandb_name destaining_v2_attention_batch4_ER_PR_Only_residual_Only
 
 echo "  Training process initiated."
