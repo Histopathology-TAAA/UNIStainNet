@@ -211,7 +211,6 @@ def main():
         from torchmetrics.image.fid import FrechetInceptionDistance
         from torchmetrics.image.kid import KernelInceptionDistance
         from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
-        import torchvision
 
         fid_metric = FrechetInceptionDistance(feature=2048, normalize=True)
         kid_metric = KernelInceptionDistance(feature=2048, normalize=True, subset_size=min(100, 100))
@@ -231,6 +230,11 @@ def main():
 
         total_images = 0
 
+        grid_limit = 16
+        grid_gen_samples = []
+        grid_real_samples = []
+        grid_he_samples = []
+
         stain_dir = output_dir / stain_lower
         stain_dir.mkdir(parents=True, exist_ok=True)
         gen_dir = stain_dir / 'generated'
@@ -245,10 +249,12 @@ def main():
             N = gen_batch.size(0)
             total_images += N
 
-            # Save generated images to disk immediately (0-1 PNGs)
-            for i in range(N):
-                out_path = gen_dir / f"{batch_fnames[i]}.png"
-                torchvision.utils.save_image(((gen_batch[i] + 1) / 2).clamp(0, 1), str(out_path))
+            # Keep only a small representative subset for the sample grid.
+            if len(grid_gen_samples) < grid_limit:
+                take = min(grid_limit - len(grid_gen_samples), N)
+                grid_gen_samples.append(gen_batch[:take].cpu())
+                grid_real_samples.append(real_batch[:take].cpu())
+                grid_he_samples.append(he_batch[:take].cpu())
 
             # Prepare 0-1 tensors for some metrics
             gen_01 = ((gen_batch + 1) / 2).clamp(0, 1)
@@ -330,6 +336,13 @@ def main():
                 pass
 
         print(f"Generated {total_images} images (streamed)")
+
+        # Save one representative grid image per stain instead of every PNG.
+        if grid_gen_samples:
+            grid_he = torch.cat(grid_he_samples, dim=0)
+            grid_real = torch.cat(grid_real_samples, dim=0)
+            grid_gen = torch.cat(grid_gen_samples, dim=0)
+            save_sample_grid(grid_he, grid_real, grid_gen, stain_dir / 'sample_grid.png', n=min(grid_limit, grid_gen.size(0)))
 
         stain_results = {}
 
