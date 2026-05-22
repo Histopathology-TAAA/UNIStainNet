@@ -27,6 +27,8 @@ from src.utils.dab import DABExtractor
 from src.utils.metrics import (
     compute_image_quality_metrics,
     compute_he_structure_metrics,
+    compute_h_channel_ssim,
+    compute_nmi,
     compute_uni_fid,
     compute_dab_metrics,
     compute_iod_metrics,
@@ -212,6 +214,8 @@ def main():
 
         print(f"  Computing H&E structure metrics...")
         stain_results['structure'] = compute_he_structure_metrics(gen, he)
+        stain_results['structure'].update(compute_h_channel_ssim(he, gen))
+        stain_results['structure'].update(compute_nmi(he, gen))
 
         print(f"  Computing DAB metrics...")
         stain_results['dab'] = compute_dab_metrics(gen, real, labels=None, dab_extractor=dab_extractor)
@@ -236,6 +240,8 @@ def main():
               f"LPIPS={iq['lpips_mean']:.3f} | "
               f"SSIM={iq['ssim_mean']:.3f} | "
               f"H&E-Struct={structure['he_structure_ssim']:.3f} | "
+              f"H-SSIM={structure['he_h_ssim']:.3f} | "
+              f"NMI={structure['he_nmi']:.3f} | "
               f"Pearson-r={dab.get('dab_pearson_r', 0):.3f}")
 
     del uni_model
@@ -249,7 +255,7 @@ def main():
     metric_keys = ['fid_inception', 'kid_mean_x1000', 'lpips_mean', 'lpips_128_mean',
                     'ssim_mean', 'psnr_mean']
     dab_keys = ['dab_mae_overall', 'dab_pearson_r', 'dab_kl', 'dab_jsd']
-    structure_keys = ['he_structure_ssim']
+    structure_keys = ['he_structure_ssim', 'he_h_ssim', 'he_nmi']
     iod_keys = ['miod_diff', 'miod_abs_diff']
 
     macro = {}

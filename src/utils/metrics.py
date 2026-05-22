@@ -189,6 +189,132 @@ def compute_he_structure_metrics(generated, he_reference, resize_to=256):
     }
 
 
+def extract_hematoxylin_map(images, normalize="max"):
+    """Extract Hematoxylin (H) channel via Ruifrok & Johnston deconvolution.
+
+    Args:
+        images: [B, 3, H, W] in [-1, 1] or [0, 1]
+        normalize: "none", "max", or "meanstd"
+
+    Returns:
+        h_map: [B, 1, H, W] Hematoxylin intensity map
+    """
+    if images.min() < 0:
+        images = (images + 1.0) / 2.0
+
+    images = images.clamp(1e-6, 1.0)
+    od = -torch.log10(images + 1e-6)
+
+    # Ruifrok & Johnston H-DAB stain matrix (DAB, H)
+    stain_matrix = torch.tensor([
+        [0.268, 0.570, 0.776],  # DAB (brown)
+        [0.650, 0.704, 0.286],  # Hematoxylin (blue)
+    ], device=od.device, dtype=od.dtype)
+    deconv_matrix = torch.linalg.pinv(stain_matrix.T)
+
+    B, _, H, W = od.shape
+    od_flat = od.permute(0, 2, 3, 1).reshape(-1, 3)
+    concentrations = od_flat @ deconv_matrix.T
+    h_flat = concentrations[:, 1]
+    h_map = h_flat.reshape(B, H, W).unsqueeze(1)
+
+    if normalize == "max" or normalize is True:
+        mx = h_map.amax(dim=(2, 3), keepdim=True).clamp(min=1e-6)
+        h_map = h_map / mx
+    elif normalize == "meanstd":
+        mean = h_map.mean(dim=(2, 3), keepdim=True)
+        std = h_map.std(dim=(2, 3), keepdim=True).clamp(min=1e-6)
+        h_map = (h_map - mean) / std
+    elif normalize == "none" or normalize is False:
+        pass
+    else:
+        raise ValueError(f"Unknown normalization: {normalize}")
+
+    return h_map
+
+
+def compute_h_channel_ssim(he_rgb, generated_ihc, resize_to=256):
+    """SSIM between Hematoxylin maps of H&E and generated IHC.
+
+    Args:
+        he_rgb: [N, 3, H, W] in [-1, 1]
+        generated_ihc: [N, 3, H, W] in [-1, 1]
+        resize_to: spatial size used before deconvolution
+
+    Returns:
+        dict with key:
+            - he_h_ssim: SSIM between Hematoxylin maps
+    """
+    from torchmetrics.image import StructuralSimilarityIndexMeasure
+
+    he = F.interpolate(he_rgb.float(), size=resize_to, mode='bilinear', align_corners=False)
+    gen = F.interpolate(generated_ihc.float(), size=resize_to, mode='bilinear', align_corners=False)
+
+    h_he = extract_hematoxylin_map(he, normalize="max")
+    h_gen = extract_hematoxylin_map(gen, normalize="max")
+
+    ssim = StructuralSimilarityIndexMeasure(data_range=1.0)
+    return {
+        'he_h_ssim': float(ssim(h_he, h_gen).item()),
+    }
+
+
+def compute_nmi(he_rgb, generated_ihc, bins=64, resize_to=256, sigma=0.02, eps=1e-8):
+    """Compute Normalized Mutual Information (NMI) between H&E and IHC.
+
+    Uses soft histograms for differentiability. NMI is invariant to monotonic
+    intensity transforms, making it suitable for cross-stain comparison.
+
+    Args:
+        he_rgb: [N, 3, H, W] in [-1, 1]
+        generated_ihc: [N, 3, H, W] in [-1, 1]
+        bins: number of histogram bins
+        resize_to: spatial size used before histogramming
+        sigma: Gaussian kernel width for soft assignment
+        eps: numerical stability
+
+    Returns:
+        dict with key:
+            - he_nmi: mean NMI across batch
+    """
+    he = F.interpolate(he_rgb.float(), size=resize_to, mode='bilinear', align_corners=False)
+    gen = F.interpolate(generated_ihc.float(), size=resize_to, mode='bilinear', align_corners=False)
+
+    he_gray = ((he + 1) / 2).clamp(0, 1).mean(dim=1, keepdim=True)
+    gen_gray = ((gen + 1) / 2).clamp(0, 1).mean(dim=1, keepdim=True)
+
+    bin_centers = torch.linspace(0, 1, bins, device=he.device, dtype=he.dtype)
+
+    def _soft_hist(x):
+        x = x.reshape(x.shape[0], -1, 1)
+        dist = (x - bin_centers) ** 2
+        weights = torch.exp(-dist / (2 * sigma ** 2))
+        weights = weights / (weights.sum(dim=-1, keepdim=True) + eps)
+        return weights
+
+    nmi_vals = []
+    for i in range(he_gray.shape[0]):
+        hx = _soft_hist(he_gray[i:i+1])
+        hy = _soft_hist(gen_gray[i:i+1])
+
+        pxy = torch.matmul(hx.squeeze(0).T, hy.squeeze(0))
+        pxy = pxy / (pxy.sum() + eps)
+
+        px = pxy.sum(dim=1, keepdim=True)
+        py = pxy.sum(dim=0, keepdim=True)
+
+        mi = (pxy * torch.log((pxy + eps) / (px @ py + eps))).sum()
+        hx_ent = -(px * torch.log(px + eps)).sum()
+        hy_ent = -(py * torch.log(py + eps)).sum()
+
+        nmi = (2 * mi) / (hx_ent + hy_ent + eps)
+        nmi_vals.append(nmi)
+
+    return {
+        'he_nmi': float(torch.stack(nmi_vals).mean().item()),
+    }
+
+
 # ======================================================================
 # UNI-FID (pathology-native Frechet distance)
 # ======================================================================

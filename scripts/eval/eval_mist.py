@@ -36,6 +36,8 @@ from src.utils.dab import DABExtractor
 from src.utils.metrics import (
     compute_image_quality_metrics,
     compute_he_structure_metrics,
+    compute_h_channel_ssim,
+    compute_nmi,
     compute_uni_fid,
     compute_dab_metrics,
     compute_iod_metrics,
@@ -219,6 +221,8 @@ def main():
         psnr_vals = []
         lpips_vals = []
         he_struct_vals = []
+        he_h_ssim_vals = []
+        he_nmi_vals = []
 
         gen_p90s = []
         real_p90s = []
@@ -289,6 +293,18 @@ def main():
             except Exception:
                 pass
 
+            # H-channel SSIM + NMI (per-batch)
+            try:
+                h_ssim = compute_h_channel_ssim(he_batch, gen_batch)
+                he_h_ssim_vals.append(float(h_ssim.get('he_h_ssim', float('nan'))))
+            except Exception:
+                pass
+            try:
+                nmi = compute_nmi(he_batch, gen_batch)
+                he_nmi_vals.append(float(nmi.get('he_nmi', float('nan'))))
+            except Exception:
+                pass
+
             # DAB per-image stats (p90 + per-pair histograms)
             try:
                 dab_gen = dab_extractor.extract_dab_intensity(gen_batch.float(), normalize="none")
@@ -340,7 +356,11 @@ def main():
 
         # Structure metrics
         print(f"  Finalizing H&E structure metrics...")
-        stain_results['structure'] = {'he_structure_ssim': float(np.mean(he_struct_vals)) if he_struct_vals else float('nan')}
+        stain_results['structure'] = {
+            'he_structure_ssim': float(np.mean(he_struct_vals)) if he_struct_vals else float('nan'),
+            'he_h_ssim': float(np.mean(he_h_ssim_vals)) if he_h_ssim_vals else float('nan'),
+            'he_nmi': float(np.mean(he_nmi_vals)) if he_nmi_vals else float('nan'),
+        }
 
         # DAB metrics
         print(f"  Finalizing DAB metrics...")
@@ -385,6 +405,8 @@ def main():
               f"LPIPS={iq['lpips_mean']:.3f} | "
               f"SSIM={iq['ssim_mean']:.3f} | "
               f"H&E-Struct={structure['he_structure_ssim']:.3f} | "
+              f"H-SSIM={structure['he_h_ssim']:.3f} | "
+              f"NMI={structure['he_nmi']:.3f} | "
               f"Pearson-r={dab.get('dab_pearson_r', 0):.3f}")
 
     # Free UNI model
@@ -399,7 +421,7 @@ def main():
     metric_keys = ['fid_inception', 'kid_mean_x1000', 'lpips_mean', 'lpips_128_mean',
                     'ssim_mean', 'psnr_mean']
     dab_keys = ['dab_mae_overall', 'dab_pearson_r', 'dab_kl', 'dab_jsd']
-    structure_keys = ['he_structure_ssim']
+    structure_keys = ['he_structure_ssim', 'he_h_ssim', 'he_nmi']
     iod_keys = ['miod_diff', 'miod_abs_diff']
 
     macro = {}
