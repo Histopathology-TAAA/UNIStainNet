@@ -116,6 +116,6 @@ def setup():
     setup_dataset.remote()
 
 @app.local_entrypoint()
-def train(stains: str = "ER PR", batch_size: int = 4, wandb_name: str = "ccpl_er_pr"):
+def train(stains: str = "ER PR", batch_size: int = 8, wandb_name: str = "ccpl_er_pr"):
     """Run: modal run scripts/train/modal_wrapper.py::train --stains 'ER PR'"""
-    train_model.remote(stains, batch_size, wandb_name)
+    train_model.spawn(stains, batch_size, wandb_name)
