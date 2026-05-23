@@ -84,6 +84,10 @@ def main():
         lpips_weight=1.0,
         lpips_256_weight=0.5,
         lpips_fullres_weight=1.0,
+        # CCPL Dummy check
+        gigapath_distill_weight=1.0,
+        cross_channel_weight=1.0,
+        hem_histo_weight=1.0,
     )
 
     # Avoid loading UNI model by returning random tokens
@@ -93,6 +97,9 @@ def main():
         return torch.randn(b, 32 * 32, 1024, device=device)
 
     model._extract_uni_from_sub_crops = _fake_extract.__get__(model, UNIStainNetTrainer)
+    
+    # Avoid loading GigaPath 1B model by returning random feature vectors
+    model.gigapath_processor = lambda x: torch.randn(x.shape[0], 1536, device=x.device)
 
     dm = DummyDataModule()
 

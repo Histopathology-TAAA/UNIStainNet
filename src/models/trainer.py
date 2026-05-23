@@ -243,6 +243,13 @@ class UNIStainNetTrainer(pl.LightningModule):
         else:
             self.vgg_extractor = None
 
+        # GigaPath extractor for CCPL Feature Distillation
+        if getattr(self.hparams, 'gigapath_distill_weight', 0.0) > 0:
+            from src.models.gigapath_processor import GigaPathProcessor
+            self.gigapath_processor = GigaPathProcessor()
+        else:
+            self.gigapath_processor = None
+
         # Param counts
         n_gen = sum(p.numel() for p in self.generator.parameters())
         n_disc = sum(p.numel() for p in self.discriminator.parameters()) if self.discriminator else 0
@@ -251,6 +258,7 @@ class UNIStainNetTrainer(pl.LightningModule):
         n_proj = sum(p.numel() for p in self.proj_discriminator.parameters()) if self.proj_discriminator else 0
         print(f"Generator: {n_gen:,} params")
         print(f"Discriminator: {n_disc:,} (global) + {n_crop:,} (crop) + {n_uncond:,} (uncond) + {n_proj:,} (proj-stain)")
+
 
     def configure_optimizers(self):
         gen_params = list(self.generator.parameters())
@@ -708,6 +716,63 @@ class UNIStainNetTrainer(pl.LightningModule):
 
             return F.l1_loss(gen_sorted, tgt_sorted.detach())
 
+    def compute_hem_histogram_loss(self, generated, target):
+        """CCPL Dual-Channel OD Statistics (Hematoxylin Wasserstein-1)."""
+        with torch.amp.autocast('cuda', enabled=False):
+            gen = generated.float()
+            tgt = target.float()
+
+            _, hem_gen = self.dab_extractor.extract_stains(gen, normalize="none")
+            _, hem_tgt = self.dab_extractor.extract_stains(tgt, normalize="none")
+
+            B = hem_gen.shape[0]
+            gen_flat = hem_gen.reshape(B, -1)
+            tgt_flat = hem_tgt.reshape(B, -1)
+
+            p99 = torch.quantile(tgt_flat, 0.99, dim=1, keepdim=True)
+            gen_flat = gen_flat.clamp(max=p99)
+            tgt_flat = tgt_flat.clamp(max=p99)
+
+            gen_sorted, _ = gen_flat.sort(dim=1)
+            tgt_sorted, _ = tgt_flat.sort(dim=1)
+            return F.l1_loss(gen_sorted, tgt_sorted.detach())
+
+    def compute_gigapath_fd_loss(self, generated, target):
+        """CCPL Feature Distillation Loss using GigaPath."""
+        with torch.amp.autocast('cuda', enabled=False):
+            # Gigapath processor handles its own normalization
+            fg = self.gigapath_processor(generated.float())
+            fr = self.gigapath_processor(target.float())
+            cos_sim = F.cosine_similarity(fg, fr, dim=-1).mean()
+            loss_cos = 1.0 - cos_sim
+            loss_l2 = F.mse_loss(fg, fr)
+            beta = getattr(self.hparams, 'gigapath_distill_beta', 0.1)
+            return (1.0 - beta) * loss_cos + beta * loss_l2
+
+    def compute_cross_channel_loss(self, generated, target):
+        """CCPL Cross-Channel Spatial Correlation Loss (PCC)."""
+        with torch.amp.autocast('cuda', enabled=False):
+            gen = generated.float()
+            tgt = target.float()
+            dab_gen, hem_gen = self.dab_extractor.extract_stains(gen, normalize="none")
+            dab_tgt, hem_tgt = self.dab_extractor.extract_stains(tgt, normalize="none")
+            
+            B = dab_gen.shape[0]
+            def get_pcc(d, h):
+                d_flat = d.reshape(B, -1)
+                h_flat = h.reshape(B, -1)
+                d_mean = d_flat.mean(dim=1, keepdim=True)
+                h_mean = h_flat.mean(dim=1, keepdim=True)
+                d_cent = d_flat - d_mean
+                h_cent = h_flat - h_mean
+                num = (d_cent * h_cent).sum(dim=1)
+                den = torch.sqrt((d_cent**2).sum(dim=1) * (h_cent**2).sum(dim=1) + 1e-8)
+                return num / den
+                
+            pcc_gen = get_pcc(dab_gen, hem_gen)
+            pcc_tgt = get_pcc(dab_tgt, hem_tgt)
+            return F.mse_loss(pcc_gen, pcc_tgt.detach())
+
     def compute_dab_block_loss(self, generated, target):
         """Per-block DAB mean matching — spatial DAB distribution supervisor.
 
@@ -906,6 +971,25 @@ class UNIStainNetTrainer(pl.LightningModule):
             loss_bg = self.compute_background_loss(generated, he_rgb)
             loss_g = loss_g + self.hparams.bg_white_weight * loss_bg
             self.log('train/bg_white', loss_bg, prog_bar=False)
+
+        # ----------------------------------------------------------------
+        # CCPL Losses
+        # ----------------------------------------------------------------
+        if getattr(self.hparams, 'gigapath_distill_weight', 0.0) > 0 and self.gigapath_processor is not None:
+            loss_gigapath = self.compute_gigapath_fd_loss(generated, ihc_rgb)
+            loss_g = loss_g + self.hparams.gigapath_distill_weight * loss_gigapath
+            self.log('train/gigapath_fd', loss_gigapath, prog_bar=False)
+
+        if getattr(self.hparams, 'cross_channel_weight', 0.0) > 0:
+            loss_cross = self.compute_cross_channel_loss(generated, ihc_rgb)
+            loss_g = loss_g + self.hparams.cross_channel_weight * loss_cross
+            self.log('train/cross_correlation', loss_cross, prog_bar=False)
+
+        if getattr(self.hparams, 'hem_histo_weight', 0.0) > 0:
+            loss_hem_histo = self.compute_hem_histogram_loss(generated, ihc_rgb)
+            loss_g = loss_g + self.hparams.hem_histo_weight * loss_hem_histo
+            self.log('train/hem_histo', loss_hem_histo, prog_bar=False)
+
 
         # PatchNCE loss (contrastive: H&E input vs generated, never sees GT)
         if self.hparams.patchnce_weight > 0 and self.patchnce_loss is not None:

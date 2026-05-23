@@ -81,6 +81,13 @@ def main():
     parser.add_argument('--edge_encoder', type=str, default='v2', choices=['none', 'v1', 'v2'],
                         help='Edge encoder mode: none disables it, v1 enables Sobel single-scale, '
                              'v2 enables multi-scale Sobel.')
+    
+    # CCPL hyperparameters
+    parser.add_argument('--gigapath_distill_weight', type=float, default=0.1)
+    parser.add_argument('--gigapath_distill_beta', type=float, default=0.1)
+    parser.add_argument('--cross_channel_weight', type=float, default=0.1)
+    parser.add_argument('--hem_histo_weight', type=float, default=0.2)
+    
     args = parser.parse_args()
 
     print("=" * 70)
@@ -134,6 +141,11 @@ def main():
         'dab_sparsity_margin': 0.05,
         # Stain-conditioned discriminator
         'proj_disc_weight': 2.0,
+        # CCPL Losses
+        'gigapath_distill_weight': args.gigapath_distill_weight,
+        'gigapath_distill_beta': args.gigapath_distill_beta,
+        'cross_channel_weight': args.cross_channel_weight,
+        'hem_histo_weight': args.hem_histo_weight,
     }
 
     model = UNIStainNetTrainer(

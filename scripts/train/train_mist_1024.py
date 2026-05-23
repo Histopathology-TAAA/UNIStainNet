@@ -33,6 +33,13 @@ def main():
     parser.add_argument('--max_epochs', type=int, default=100)
     parser.add_argument('--wandb_name', type=str, default='mist_1024')
     parser.add_argument('--resume_from', type=str, default=None)
+    
+    # CCPL hyperparameters
+    parser.add_argument('--gigapath_distill_weight', type=float, default=0.1)
+    parser.add_argument('--gigapath_distill_beta', type=float, default=0.1)
+    parser.add_argument('--cross_channel_weight', type=float, default=0.1)
+    parser.add_argument('--hem_histo_weight', type=float, default=0.2)
+    
     args = parser.parse_args()
 
     print("=" * 70)
@@ -74,6 +81,11 @@ def main():
         feat_match_weight=10.0,
         patchnce_weight=0.0,
         bg_white_weight=0.0,
+        # CCPL Losses
+        gigapath_distill_weight=args.gigapath_distill_weight,
+        gigapath_distill_beta=args.gigapath_distill_beta,
+        cross_channel_weight=args.cross_channel_weight,
+        hem_histo_weight=args.hem_histo_weight,
         # GAN training
         r1_weight=10.0,
         r1_every=16,

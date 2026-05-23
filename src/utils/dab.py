@@ -34,19 +34,21 @@ class DABExtractor:
         rgb_images = rgb_images.clamp(1e-6, 1.0)
         return -torch.log10(rgb_images + 1e-6)
 
-    def extract_dab_intensity(
+    def extract_stains(
         self,
         images: torch.Tensor,
         normalize: str = "max"
-    ) -> torch.Tensor:
-        """Extract DAB stain intensity from IHC images.
-
+    ):
+        """Extract both DAB and Hematoxylin stain intensities from IHC images.
+        
         Args:
             images: [B, 3, H, W] RGB images in [-1, 1] or [0, 1]
             normalize: "none", "max", or "meanstd"
-
+            
         Returns:
-            dab_intensity: [B, H, W] DAB intensity map
+            tuple of (dab_intensity, hem_intensity)
+            dab_intensity: [B, H, W] DAB intensity map (brown, targets/membranes)
+            hem_intensity: [B, H, W] Hematoxylin intensity map (blue, nuclei)
         """
         B, C, H, W = images.shape
         assert C == 3, "Input must be RGB images"
@@ -63,23 +65,36 @@ class DABExtractor:
 
         # Deconvolve: concentrations = OD @ M_inv^T
         concentrations = od_flat @ deconv_matrix.T
-        dab_flat = concentrations[:, 0]  # DAB channel
+        
+        # DAB is index 0, Hematoxylin is index 1
+        dab_flat = concentrations[:, 0]
+        hem_flat = concentrations[:, 1]
 
         dab_intensity = dab_flat.reshape(B, H, W)
+        hem_intensity = hem_flat.reshape(B, H, W)
 
-        # Softplus for smooth gradients (beta=5.0 for sharper transition)
+        # Softplus for smooth gradients
         dab = F.softplus(dab_intensity, beta=5.0)
+        hem = F.softplus(hem_intensity, beta=5.0)
 
         if normalize == "max" or normalize is True:
-            mx = dab.amax(dim=(1, 2), keepdim=True).clamp(min=1e-6)
-            dab = dab / mx
+            mx_d = dab.amax(dim=(1, 2), keepdim=True).clamp(min=1e-6)
+            dab = dab / mx_d
+            mx_h = hem.amax(dim=(1, 2), keepdim=True).clamp(min=1e-6)
+            hem = hem / mx_h
         elif normalize == "meanstd":
-            mean = dab.mean(dim=(1, 2), keepdim=True)
-            std = dab.std(dim=(1, 2), keepdim=True).clamp(min=1e-6)
-            dab = (dab - mean) / std
+            mean_d, std_d = dab.mean(dim=(1, 2), keepdim=True), dab.std(dim=(1, 2), keepdim=True).clamp(min=1e-6)
+            dab = (dab - mean_d) / std_d
+            mean_h, std_h = hem.mean(dim=(1, 2), keepdim=True), hem.std(dim=(1, 2), keepdim=True).clamp(min=1e-6)
+            hem = (hem - mean_h) / std_h
         elif normalize == "none" or normalize is False:
             pass
         else:
             raise ValueError(f"Unknown normalization: {normalize}")
 
+        return dab, hem
+
+    def extract_dab_intensity(self, images: torch.Tensor, normalize: str = "max") -> torch.Tensor:
+        """Backward compatibility wrapper for existing losses."""
+        dab, _ = self.extract_stains(images, normalize=normalize)
         return dab
