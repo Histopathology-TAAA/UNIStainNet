@@ -143,6 +143,11 @@ class UNIStainNetTrainer(pl.LightningModule):
         # bottleneck (16×16). Incompatible with checkpoints trained with multi_scale=False.
         # Disable (default): eosin_multi_scale=False
         eosin_multi_scale=False,
+        # CCPL Integration weights
+        gigapath_distill_weight=0.0,
+        gigapath_distill_beta=0.1,
+        cross_channel_weight=0.0,
+        hem_histo_weight=0.0,
     ):
         super().__init__()
         self.save_hyperparameters()
