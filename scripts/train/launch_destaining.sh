@@ -149,9 +149,9 @@ python scripts/train/train_mist.py \
     --wandb_name destaining_v2_attention_batch8 \
     --resume_from "$HOME/checkpoints/destaining_v2/last.ckpt"
 
+###   Ablation Study
 
-
-# last run
+# Run 1 Attention Residual with normal SPADE
 
 PYTHONPATH=. python scripts/train/train_mist.py \    
     --data_dir   "/home/ahmed_ayman/data/Destained_MIST" \
@@ -160,26 +160,30 @@ PYTHONPATH=. python scripts/train/train_mist.py \
     --accum_steps 4      \
     --max_epochs 100      \
     --ckpt_dir   "./checkpoints/destaining_v2"     \
-    --wandb_name destaining_v2_attention_batch4_ER_PR_Only
+    --wandb_name destaining_v2_attention_batch4_ER_PR_Only \
+    --use_eosin_encoder 
 
 
 # for evaluation 
 PYTHONPATH=. python scripts/eval/eval_mist.py \
-  --checkpoint "/home/ahmed_ayman/data/Models Checkpoints/UNIStainNet/Destaining_v2_ER_PR/mist_epoch=086_step=358703.ckpt" \
+  --checkpoint "/home/ahmed_ayman/data/Models Checkpoints/UNIStainNet/Destaining_v2_ER_PR/attention spade only /mist_epoch=085_step=354557.ckpt" \
   --data_dir "/home/ahmed_ayman/data/Destained_MIST" \
   --stains ER PR \
   --batch_size 4 \
-  --output_dir "./eval_output/destaining_v2_ER_PR"
+  --output_dir "./eval_output/destaining_v2_ER_PR_attn_spade_only"
 
 PYTHONPATH=. python scripts/eval/eval_mist.py \
-  --checkpoint "./checkpoints/destaining_v2/last.ckpt" \
+  --checkpoint "./checkpoints/destaining_v2_attn_spade/last.ckpt" \
   --data_dir "/home/ahmed_ayman/data/Destained_MIST" \
   --stains ER PR \
   --batch_size 4 \
-  --output_dir "./eval_output/destaining_v2_ER_PR_Full"
+  --output_dir "./eval_output/destaining_v2_ER_PR_attn_spade_only"
+
+# Run 1 Done 
 
 
-# Run 2
+# Run 2 SPADE attention block only
+# Ongoing on Knights machine
 source .venv/bin/activate
 PYTHONPATH=. python scripts/train/train_mist.py \
     --data_dir "/home/ahmed_ayman/data/Destained_MIST" \
@@ -191,7 +195,52 @@ PYTHONPATH=. python scripts/train/train_mist.py \
     --disable_attention_residual \
     --use_eosin_encoder \
     --use_attention_for_spade   \
-    --wandb_name destaining_v2_attention_batch4_ER_PR_Only_attn_spade_and_residual 
+    --wandb_name destaining_v2_attention_batch4_ER_PR_Only_attn_spade_Only_fixed 
+
+# Run 2 Done
+
+# Run 3 both attention paths
+# Ongoing on Lightning AI
+PYTHONPATH=. python scripts/train/train_mist.py \
+    --data_dir "MIST" \
+    --stains ER PR \
+    --batch_size 4 \
+    --accum_steps 2 \
+    --ckpt_dir "checkpoints/destaining_v2_attn_spade_and_residual" \
+    --edge_encoder v2 \
+    --enable_attention_residual \
+    --use_eosin_encoder \
+    --use_attention_for_spade   \
+    --wandb_name destaining_v2_attention_batch4_ER_PR_Only_attn_spade_and_residual_together_fixed
+
+# Run 4 Residual with no SPADE
+PYTHONPATH=. python scripts/train/train_mist.py \
+    --data_dir "/home/ahmed_ayman/data/Destained_MIST" \
+    --stains ER PR \
+    --batch_size 4 \
+    --accum_steps 2 \
+    --ckpt_dir "checkpoints/destaining_v2_attn_residual_only" \
+    --edge_encoder v2 \
+    --enable_attention_residual \
+    --use_eosin_encoder \
+    --no_spade_use_uni \
+    --no_use_attention_for_spade  \
+    --wandb_name destaining_v2_attention_batch4_ER_PR_Only_residual_Only
+
+# Run 5 Normal SPADE
+PYTHONPATH=. python scripts/train/train_mist.py \
+    --data_dir "/home/ahmed_ayman/data/Destained_MIST" \
+    --stains ER PR \
+    --batch_size 4 \
+    --accum_steps 2 \
+    --ckpt_dir "checkpoints/destaining_v2_attn_Normal_SPADE" \
+    --edge_encoder v2 \
+    --disable_attention_residual \
+    --use_eosin_encoder \
+    --no_use_attention_for_spade  \
+    --wandb_name destaining_v2_attention_batch4_ER_PR_Only_Normal_SPADE
+
 # To upload a model to hf
 # hf upload asserelzeki/destained_v1_UNIStainnet_v2 ./checkpoints/destaining_v2/mist_epoch=002_step=010973.ckpt
 # hf upload asserelzeki/destained_UNIStainnet_v2 ./checkpoints/destaining_v2/mist_epoch=002_step=010973.ckpt
+# hf upload asserelzeki/destained_UNIStainnet_v2_attn_SPADE_only ./checkpoints/destaining_v2_attn_spade/last.ckpt destained_UNIStainnet_v2_attn_SPADE_only.ckpt
