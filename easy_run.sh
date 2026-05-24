@@ -189,4 +189,19 @@ PYTHONPATH=. python scripts/train/train_mist.py \
     --no_use_attention_for_spade  \
     --wandb_name destaining_v2_attention_batch4_ER_PR_Only_residual_Only
 
+# For Resuming from a checkpoint, use the following command (uncomment and adjust the --ckpt_dir and --wandb_name as needed):
+# PYTHONPATH=. python scripts/train/train_mist.py \
+#     --data_dir   "$DATA_DIR" \
+#     --stains     $STAINS \
+#     --batch_size 8 \
+#     --ckpt_dir "checkpoints/destaining_v2_attn_residual_only" \
+#     --edge_encoder v2 \
+#     --enable_attention_residual \
+#     --use_eosin_encoder \
+#     --no_spade_use_uni \
+#     --no_use_attention_for_spade  \
+#     --wandb_name destaining_v2_attention_batch4_ER_PR_Only_residual_Only \
+#     --log_val_fid \
+#     --resume_from "checkpoints/destaining_v2_attn_residual_only/last.ckpt"
+
 echo "  Training process initiated."
