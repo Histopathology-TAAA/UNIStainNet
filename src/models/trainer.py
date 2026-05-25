@@ -30,6 +30,7 @@ from src.models.discriminator import (
 from src.models.generator import SPADEUNetGenerator
 from src.models.losses import VGGFeatureExtractor, gram_matrix, PatchNCELoss
 from src.utils.dab import DABExtractor
+from src.utils.metrics import compute_uni_fid
 
 
 # ======================================================================
@@ -143,6 +144,13 @@ class UNIStainNetTrainer(pl.LightningModule):
         # bottleneck (16×16). Incompatible with checkpoints trained with multi_scale=False.
         # Disable (default): eosin_multi_scale=False
         eosin_multi_scale=False,
+        # Validation metric logging toggles
+        log_val_lpips=True,
+        log_val_ssim=True,
+        log_val_dab_mae=True,
+        log_val_fid=False,
+        log_val_kid=False,
+        log_val_unifid=False,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -1121,6 +1129,35 @@ class UNIStainNetTrainer(pl.LightningModule):
         self._random_val_batch_idx = torch.randint(1, max(2, n_val_batches), (1,)).item()
         # Per-label sample collectors (for multi-stain visual grids)
         self._val_per_label_samples = {}
+        # Streamed FID accumulation across validation batches
+        if self.hparams.log_val_fid:
+            try:
+                from torchmetrics.image.fid import FrechetInceptionDistance
+                self._val_fid = FrechetInceptionDistance(feature=2048, normalize=True).to(self.device)
+            except Exception:
+                self._val_fid = None
+        else:
+            self._val_fid = None
+
+        if self.hparams.log_val_kid:
+            try:
+                from torchmetrics.image.kid import KernelInceptionDistance
+                self._val_kid = KernelInceptionDistance(
+                    feature=2048,
+                    normalize=True,
+                    subset_size=100,
+                ).to(self.device)
+            except Exception:
+                self._val_kid = None
+        else:
+            self._val_kid = None
+
+        if self.hparams.log_val_unifid:
+            self._val_unifid_gen = []
+            self._val_unifid_real = []
+        else:
+            self._val_unifid_gen = None
+            self._val_unifid_real = None
 
     def _log_sample_grid(self, he, her2_01, gen_01, key):
         """Log H&E | Real | Gen grid to wandb."""
@@ -1164,32 +1201,62 @@ class UNIStainNetTrainer(pl.LightningModule):
         lpips_size = self.hparams.image_size // 4
         gen_lpips = F.interpolate(generated, size=lpips_size, mode='bilinear', align_corners=False)
         ihc_lpips = F.interpolate(ihc_rgb, size=lpips_size, mode='bilinear', align_corners=False)
-        lpips_val = self.lpips_fn(gen_lpips, ihc_lpips).mean()
+        lpips_val = None
+        if self.hparams.log_val_lpips:
+            lpips_val = self.lpips_fn(gen_lpips, ihc_lpips).mean()
 
         # SSIM
         gen_01 = ((generated + 1) / 2).clamp(0, 1)
         her2_01 = ((ihc_rgb + 1) / 2).clamp(0, 1)
         from torchmetrics.functional.image import structural_similarity_index_measure
-        ssim_val = structural_similarity_index_measure(gen_01, her2_01, data_range=1.0)
+        ssim_val = None
+        if self.hparams.log_val_ssim:
+            ssim_val = structural_similarity_index_measure(gen_01, her2_01, data_range=1.0)
+
+        # FID (streamed across batches)
+        if getattr(self, '_val_fid', None) is not None:
+            try:
+                self._val_fid.update(her2_01, real=True)
+                self._val_fid.update(gen_01, real=False)
+            except Exception:
+                pass
+
+        # KID (streamed across batches)
+        if getattr(self, '_val_kid', None) is not None:
+            try:
+                self._val_kid.update(her2_01, real=True)
+                self._val_kid.update(gen_01, real=False)
+            except Exception:
+                pass
+
+        # UNI-FID (accumulate tensors on CPU and compute once per epoch)
+        if self._val_unifid_gen is not None:
+            self._val_unifid_gen.append(generated.detach().cpu())
+            self._val_unifid_real.append(ihc_rgb.detach().cpu())
 
         # DAB MAE (canonical: mean of top-10%)
-        dab_gen = self.dab_extractor.extract_dab_intensity(generated.float().cpu(), normalize="none")
-        dab_real = self.dab_extractor.extract_dab_intensity(ihc_rgb.float().cpu(), normalize="none")
+        dab_mae = None
+        if self.hparams.log_val_dab_mae:
+            dab_gen = self.dab_extractor.extract_dab_intensity(generated.float().cpu(), normalize="none")
+            dab_real = self.dab_extractor.extract_dab_intensity(ihc_rgb.float().cpu(), normalize="none")
 
-        def p90_score(dab):
-            flat = dab.flatten()
-            p90 = torch.quantile(flat, 0.9)
-            mask = flat >= p90
-            return flat[mask].mean().item() if mask.sum() > 0 else flat.mean().item()
+            def p90_score(dab):
+                flat = dab.flatten()
+                p90 = torch.quantile(flat, 0.9)
+                mask = flat >= p90
+                return flat[mask].mean().item() if mask.sum() > 0 else flat.mean().item()
 
-        dab_mae = sum(
-            abs(p90_score(dab_gen[i]) - p90_score(dab_real[i]))
-            for i in range(len(dab_gen))
-        ) / len(dab_gen)
+            dab_mae = sum(
+                abs(p90_score(dab_gen[i]) - p90_score(dab_real[i]))
+                for i in range(len(dab_gen))
+            ) / len(dab_gen)
 
-        self.log('val/lpips', lpips_val, prog_bar=True, sync_dist=True)
-        self.log('val/ssim', ssim_val, prog_bar=True, sync_dist=True)
-        self.log('val/dab_mae', dab_mae, prog_bar=True, sync_dist=True)
+        if lpips_val is not None:
+            self.log('val/lpips', lpips_val, prog_bar=True, sync_dist=True)
+        if ssim_val is not None:
+            self.log('val/ssim', ssim_val, prog_bar=True, sync_dist=True)
+        if dab_mae is not None:
+            self.log('val/dab_mae', dab_mae, prog_bar=True, sync_dist=True)
 
         # Collect per-label samples for visual grids (multi-stain only)
         if hasattr(self, '_val_per_label_samples'):
@@ -1213,6 +1280,37 @@ class UNIStainNetTrainer(pl.LightningModule):
 
     def on_validation_epoch_end(self):
         """Log per-label sample grids if multiple labels are present."""
+        if getattr(self, '_val_fid', None) is not None:
+            try:
+                fid_val = self._val_fid.compute().item()
+                self.log('val/fid', fid_val, prog_bar=True, sync_dist=True)
+            except Exception:
+                pass
+            self._val_fid.reset()
+            self._val_fid = None
+
+        if getattr(self, '_val_kid', None) is not None:
+            try:
+                kid_mean, kid_std = self._val_kid.compute()
+                self.log('val/kid_mean', kid_mean.item(), prog_bar=False, sync_dist=True)
+                self.log('val/kid_std', kid_std.item(), prog_bar=False, sync_dist=True)
+                self.log('val/kid_mean_x1000', kid_mean.item() * 1000.0, prog_bar=True, sync_dist=True)
+            except Exception:
+                pass
+            self._val_kid.reset()
+            self._val_kid = None
+
+        if self._val_unifid_gen is not None:
+            try:
+                gen_all = torch.cat(self._val_unifid_gen, dim=0)
+                real_all = torch.cat(self._val_unifid_real, dim=0)
+                uni_fid_val = compute_uni_fid(gen_all, real_all)
+                self.log('val/uni_fid', uni_fid_val, prog_bar=True, sync_dist=True)
+            except Exception:
+                pass
+            self._val_unifid_gen = None
+            self._val_unifid_real = None
+
         if not hasattr(self, '_val_per_label_samples') or len(self._val_per_label_samples) <= 1:
             return
 

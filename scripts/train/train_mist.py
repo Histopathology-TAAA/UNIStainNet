@@ -81,6 +81,24 @@ def main():
     parser.add_argument('--edge_encoder', type=str, default='v2', choices=['none', 'v1', 'v2'],
                         help='Edge encoder mode: none disables it, v1 enables Sobel single-scale, '
                              'v2 enables multi-scale Sobel.')
+    parser.add_argument('--log_val_lpips', action='store_true', default=True,
+                        help='Log LPIPS during validation (default: enabled).')
+    parser.add_argument('--no_log_val_lpips', dest='log_val_lpips', action='store_false')
+    parser.add_argument('--log_val_ssim', action='store_true', default=True,
+                        help='Log SSIM during validation (default: enabled).')
+    parser.add_argument('--no_log_val_ssim', dest='log_val_ssim', action='store_false')
+    parser.add_argument('--log_val_dab_mae', action='store_true', default=True,
+                        help='Log DAB MAE during validation (default: enabled).')
+    parser.add_argument('--no_log_val_dab_mae', dest='log_val_dab_mae', action='store_false')
+    parser.add_argument('--log_val_fid', action='store_true', default=False,
+                        help='Log FID during validation (default: disabled).')
+    parser.add_argument('--no_log_val_fid', dest='log_val_fid', action='store_false')
+    parser.add_argument('--log_val_kid', action='store_true', default=False,
+                        help='Log KID during validation (default: disabled).')
+    parser.add_argument('--no_log_val_kid', dest='log_val_kid', action='store_false')
+    parser.add_argument('--log_val_unifid', action='store_true', default=False,
+                        help='Log UNI-FID during validation (default: disabled).')
+    parser.add_argument('--no_log_val_unifid', dest='log_val_unifid', action='store_false')
     args = parser.parse_args()
 
     print("=" * 70)
@@ -177,6 +195,13 @@ def main():
         use_eosin_encoder=args.use_eosin_encoder,
         eosin_out_ch=64,
         eosin_multi_scale=args.eosin_multi_scale,   # Option B — default False
+        # Validation metrics
+        log_val_lpips=args.log_val_lpips,
+        log_val_ssim=args.log_val_ssim,
+        log_val_dab_mae=args.log_val_dab_mae,
+        log_val_fid=args.log_val_fid,
+        log_val_kid=args.log_val_kid,
+        log_val_unifid=args.log_val_unifid,
     )
 
     dm = MISTMultiStainCropDataModule(
