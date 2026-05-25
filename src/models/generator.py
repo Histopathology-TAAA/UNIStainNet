@@ -32,7 +32,7 @@ class SPADEUNetGenerator(nn.Module):
                  uni_spatial_size=4, image_size=512, uni_spade_at_512=False,
                  use_eosin_encoder=False, eosin_out_ch=64, eosin_multi_scale=False,
                  use_attention_for_spade=False, enable_attention_residual=True,
-                 spade_use_uni=True):
+                 spade_use_uni=True, use_h_adapter=False):
         super().__init__()
         self.num_classes = num_classes
         self.class_dim = class_dim
@@ -45,6 +45,16 @@ class SPADEUNetGenerator(nn.Module):
         self.use_attention_for_spade = use_attention_for_spade
         self.enable_attention_residual = enable_attention_residual
         self.spade_use_uni = spade_use_uni
+        self.use_h_adapter = use_h_adapter
+
+        # H-channel adapter: learn IHC→H&E transformation (case A only)
+        # Applied in trainer before generator, only when use_h_adapter=True
+        if use_h_adapter:
+            self.h_adapter = nn.Conv2d(1, 1, 1, padding=0, bias=True)
+            nn.init.eye_(self.h_adapter.weight.squeeze())
+            nn.init.zeros_(self.h_adapter.bias)
+        else:
+            self.h_adapter = None
 
         # Class embedding used by FiLM in the decoder.
         self.class_embed = nn.Embedding(num_classes, class_dim)
@@ -202,6 +212,16 @@ class SPADEUNetGenerator(nn.Module):
                 nn.Conv2d(64, 3, 3, padding=1),
                 nn.Tanh(),
             )
+
+    def apply_h_adapter(self, h_maps):
+        """Apply H-channel domain adapter (IHC→H&E transformation).
+        
+        Only active when use_h_adapter=True. Initialized as identity.
+        Called from trainer for case A (IHC H-maps) only.
+        """
+        if self.h_adapter is not None:
+            return self.h_adapter(h_maps)
+        return h_maps
 
     def encode(self, images):
         """Extract intermediate encoder features for PatchNCE loss."""

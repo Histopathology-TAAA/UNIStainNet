@@ -801,6 +801,11 @@ class UNIStainNetTrainer(pl.LightningModule):
         # ----------------------------------------------------------------
         use_aligned = torch.rand(1, device=self.device) > self.hparams.case_b_prob
         gen_input = ihc_h_map if use_aligned else he_h_map
+        
+        # Apply H-channel adapter only for case A (IHC H-maps) during training
+        if use_aligned and self.generator.h_adapter is not None:
+            gen_input = self.generator.apply_h_adapter(gen_input)
+        
         generated = self.generator(gen_input, uni_dropped, labels_dropped, e_maps=he_e_map)
 
         loss_g = torch.tensor(0.0, device=self.device)

@@ -81,6 +81,10 @@ def main():
     parser.add_argument('--edge_encoder', type=str, default='v2', choices=['none', 'v1', 'v2'],
                         help='Edge encoder mode: none disables it, v1 enables Sobel single-scale, '
                              'v2 enables multi-scale Sobel.')
+    parser.add_argument('--use_h_adapter', action='store_true', default=False,
+                        help='Enable H-channel domain adapter (IHC→H&E transformation). '
+                             'Applied only during training on case A (IHC H-maps). '
+                             'Default: disabled.')
     parser.add_argument('--log_val_lpips', action='store_true', default=True,
                         help='Log LPIPS during validation (default: enabled).')
     parser.add_argument('--no_log_val_lpips', dest='log_val_lpips', action='store_false')
@@ -166,6 +170,7 @@ def main():
         edge_base_ch=32,
         uni_spatial_size=32,    # 32x32 patch tokens from UNI
         label_names=['HER2', 'Ki67', 'ER', 'PR'],
+        use_h_adapter=args.use_h_adapter,
         # Optimizer
         gen_lr=1e-4,
         disc_lr=4e-4,
