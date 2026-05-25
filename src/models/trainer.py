@@ -89,6 +89,7 @@ class UNIStainNetTrainer(pl.LightningModule):
         # Ablation
         disable_uni=False,
         disable_class=False,
+        use_h_adapter=False,
         # GAN training
         r1_weight=10.0,
         r1_every=16,
