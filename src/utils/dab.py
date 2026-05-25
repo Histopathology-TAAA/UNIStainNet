@@ -83,3 +83,53 @@ class DABExtractor:
             raise ValueError(f"Unknown normalization: {normalize}")
 
         return dab
+
+    def extract_hematoxylin_intensity(
+        self,
+        images: torch.Tensor,
+        normalize: str = "max"
+    ) -> torch.Tensor:
+        """Extract Hematoxylin (H) stain intensity from images.
+
+        Args:
+            images: [B, 3, H, W] RGB images in [-1, 1] or [0, 1]
+            normalize: "none", "max", or "meanstd"
+
+        Returns:
+            h_intensity: [B, H, W] Hematoxylin intensity map
+        """
+        B, C, H_sz, W = images.shape
+        assert C == 3, "Input must be RGB images"
+
+        # Auto-convert [-1, 1] -> [0, 1] if needed
+        if images.min() < 0:
+            images = (images + 1.0) / 2.0
+
+        od = self.rgb_to_od(images)
+        od_flat = od.permute(0, 2, 3, 1).reshape(-1, 3)
+
+        # Ensure deconv_matrix is on same device as input
+        deconv_matrix = self.deconv_matrix.to(od_flat.device)
+
+        # Deconvolve: concentrations = OD @ M_inv^T
+        concentrations = od_flat @ deconv_matrix.T
+        h_flat = concentrations[:, 1]  # Hematoxylin channel (index 1)
+
+        h_intensity = h_flat.reshape(B, H_sz, W)
+
+        # Softplus for smooth gradients
+        h = F.softplus(h_intensity, beta=5.0)
+
+        if normalize == "max" or normalize is True:
+            mx = h.amax(dim=(1, 2), keepdim=True).clamp(min=1e-6)
+            h = h / mx
+        elif normalize == "meanstd":
+            mean = h.mean(dim=(1, 2), keepdim=True)
+            std = h.std(dim=(1, 2), keepdim=True).clamp(min=1e-6)
+            h = (h - mean) / std
+        elif normalize == "none" or normalize is False:
+            pass
+        else:
+            raise ValueError(f"Unknown normalization: {normalize}")
+
+        return h

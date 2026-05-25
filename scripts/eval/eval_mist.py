@@ -39,6 +39,8 @@ from src.utils.metrics import (
     compute_uni_fid,
     compute_dab_metrics,
     compute_iod_metrics,
+    compute_he_h_ssim,
+    compute_he_nmi,
     save_sample_grid,
     composite_background,
 )
@@ -224,6 +226,17 @@ def main():
         print(f"  Computing IOD metrics...")
         stain_results['iod'] = compute_iod_metrics(gen, real, labels=None)
 
+        # HE-H SSIM and HE-NMI metrics
+        print(f"  Computing HE-H SSIM and HE-NMI...")
+        he_h_ssim = compute_he_h_ssim(gen, real, dab_extractor=dab_extractor)
+        he_nmi = compute_he_nmi(gen, real, dab_extractor=dab_extractor)
+        stain_results['he_structure'] = {
+            'he_h_ssim_mean': he_h_ssim['he_h_ssim_mean'],
+            'he_h_ssim_std': he_h_ssim['he_h_ssim_std'],
+            'he_nmi_mean': he_nmi['he_nmi_mean'],
+            'he_nmi_std': he_nmi['he_nmi_std'],
+        }
+
         # UNI-FID (per-stain)
         if not args.skip_uni_fid:
             print(f"  Computing UNI-FID...")
@@ -237,11 +250,14 @@ def main():
         # Print per-stain summary
         iq = stain_results['image_quality']
         dab = stain_results['dab']
+        he_struct = stain_results['he_structure']
         print(f"\n  {stain}: FID={iq['fid_inception']:.1f} | "
               f"KID={iq['kid_mean_x1000']:.1f} | "
               f"LPIPS={iq['lpips_mean']:.3f} | "
               f"SSIM={iq['ssim_mean']:.3f} | "
-              f"Pearson-r={dab.get('dab_pearson_r', 0):.3f}")
+              f"Pearson-r={dab.get('dab_pearson_r', 0):.3f} | "
+              f"HE-H-SSIM={he_struct['he_h_ssim_mean']:.3f} | "
+              f"HE-NMI={he_struct['he_nmi_mean']:.3f}")
 
     # Free UNI model
     del uni_model
@@ -256,6 +272,7 @@ def main():
                     'ssim_mean', 'psnr_mean']
     dab_keys = ['dab_mae_overall', 'dab_pearson_r', 'dab_kl', 'dab_jsd']
     iod_keys = ['miod_diff', 'miod_abs_diff']
+    he_struct_keys = ['he_h_ssim_mean', 'he_nmi_mean']
 
     macro = {}
     for key in metric_keys:
@@ -273,6 +290,11 @@ def main():
                 for s in args.stains]
         macro[key] = float(np.mean([v for v in vals if not np.isnan(v)]))
 
+    for key in he_struct_keys:
+        vals = [results['per_stain'][s]['he_structure'].get(key, float('nan'))
+                for s in args.stains]
+        macro[key] = float(np.mean([v for v in vals if not np.isnan(v)]))
+
     results['macro_average'] = macro
 
     # Print table
@@ -283,15 +305,17 @@ def main():
     print(header)
     print("-" * len(header))
 
-    for key in metric_keys + dab_keys + iod_keys:
+    for key in metric_keys + dab_keys + iod_keys + he_struct_keys:
         row = f"{key:<20s}"
         for s in args.stains:
             if key in ['fid_inception', 'kid_mean_x1000']:
                 src = 'image_quality'
             elif key.startswith('dab'):
                 src = 'dab'
-            else:
+            elif key.startswith('miod'):
                 src = 'iod'
+            else:
+                src = 'he_structure'
             val = results['per_stain'][s][src].get(key, float('nan'))
             row += f" {val:>8.3f}"
         row += f" {macro.get(key, float('nan')):>8.3f}"

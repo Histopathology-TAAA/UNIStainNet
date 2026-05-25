@@ -543,8 +543,119 @@ def compute_downstream_metrics(generated, real, labels, train_ihc_dir):
 
 
 # ======================================================================
-# Visualization
+# H-map (Hematoxylin channel) structure metrics
 # ======================================================================
+
+def compute_he_h_ssim(generated, real, dab_extractor=None):
+    """Compute SSIM on Hematoxylin channel between generated and real IHC.
+
+    Measures structural preservation: how well the generated image matches the
+    real IHC tissue structure (nuclei, glands, etc.) at the H-channel level.
+
+    Args:
+        generated: [N, 3, H, W] generated IHC in [-1, 1]
+        real: [N, 3, H, W] real IHC in [-1, 1]
+        dab_extractor: DABExtractor instance (will create if None)
+
+    Returns:
+        dict with ssim_mean, ssim_std
+    """
+    from torchmetrics.image import StructuralSimilarityIndexMeasure
+
+    if dab_extractor is None:
+        dab_extractor = DABExtractor(device='cpu')
+
+    # Extract H-maps (normalize to [0, 1] for SSIM)
+    h_gen = dab_extractor.extract_hematoxylin_intensity(generated.cpu(), normalize="max")
+    h_real = dab_extractor.extract_hematoxylin_intensity(real.cpu(), normalize="max")
+
+    # Ensure [0, 1] range
+    h_gen = (h_gen - h_gen.min()) / (h_gen.max() - h_gen.min() + 1e-6)
+    h_real = (h_real - h_real.min()) / (h_real.max() - h_real.min() + 1e-6)
+
+    # Stack to [N, 1, H, W] for SSIM
+    h_gen_1ch = h_gen.unsqueeze(1)
+    h_real_1ch = h_real.unsqueeze(1)
+
+    results = {}
+    ssim_metric = StructuralSimilarityIndexMeasure(data_range=1.0)
+    ssim_vals = []
+    for i in range(0, len(h_gen), 16):
+        batch_val = ssim_metric(h_gen_1ch[i:i+16], h_real_1ch[i:i+16])
+        ssim_vals.append(batch_val.item())
+
+    results['he_h_ssim_mean'] = float(np.mean(ssim_vals))
+    results['he_h_ssim_std'] = float(np.std(ssim_vals))
+
+    return results
+
+
+def compute_he_nmi(generated, real, dab_extractor=None, n_bins=256):
+    """Compute Normalized Mutual Information (NMI) on H-maps.
+
+    NMI = (2 * MI(H_gen, H_real)) / (H(H_gen) + H(H_real))
+    where H = entropy, MI = mutual information.
+
+    Measures information overlap / alignment between generated and real H-channel.
+    Range: [0, 1]. Higher = better alignment.
+
+    Args:
+        generated: [N, 3, H, W] generated IHC in [-1, 1]
+        real: [N, 3, H, W] real IHC in [-1, 1]
+        dab_extractor: DABExtractor instance (will create if None)
+        n_bins: number of histogram bins for entropy estimation
+
+    Returns:
+        dict with nmi_mean, nmi_std
+    """
+    if dab_extractor is None:
+        dab_extractor = DABExtractor(device='cpu')
+
+    # Extract H-maps [N, H, W] and flatten per image
+    h_gen = dab_extractor.extract_hematoxylin_intensity(generated.cpu(), normalize="none")
+    h_real = dab_extractor.extract_hematoxylin_intensity(real.cpu(), normalize="none")
+
+    nmi_vals = []
+    for i in range(len(h_gen)):
+        h_g = h_gen[i].flatten().numpy()
+        h_r = h_real[i].flatten().numpy()
+
+        # Normalize to [0, 1] for consistent histogram binning
+        h_g_norm = (h_g - h_g.min()) / (h_g.max() - h_g.min() + 1e-6)
+        h_r_norm = (h_r - h_r.min()) / (h_r.max() - h_r.min() + 1e-6)
+
+        # Joint histogram
+        hist_2d, _, _ = np.histogram2d(h_g_norm, h_r_norm, bins=n_bins, range=[[0, 1], [0, 1]])
+        hist_2d = hist_2d / hist_2d.sum()  # normalize to probability
+
+        # Marginal histograms
+        p_g = hist_2d.sum(axis=1)
+        p_r = hist_2d.sum(axis=0)
+
+        # Entropies
+        H_g = -np.sum(p_g[p_g > 0] * np.log2(p_g[p_g > 0]))
+        H_r = -np.sum(p_r[p_r > 0] * np.log2(p_r[p_r > 0]))
+
+        # Mutual information
+        MI = 0.0
+        for gi in range(len(p_g)):
+            for ri in range(len(p_r)):
+                if hist_2d[gi, ri] > 0 and p_g[gi] > 0 and p_r[ri] > 0:
+                    MI += hist_2d[gi, ri] * np.log2(hist_2d[gi, ri] / (p_g[gi] * p_r[ri]))
+
+        # NMI
+        if (H_g + H_r) > 1e-6:
+            nmi = 2.0 * MI / (H_g + H_r)
+        else:
+            nmi = 0.0
+
+        nmi_vals.append(float(np.clip(nmi, 0, 1)))
+
+    results = {}
+    results['he_nmi_mean'] = float(np.mean(nmi_vals))
+    results['he_nmi_std'] = float(np.std(nmi_vals))
+
+    return results
 
 def save_sample_grid(he, real, generated, path, n=16):
     """Save H&E | Real IHC | Generated grid for visual inspection."""
