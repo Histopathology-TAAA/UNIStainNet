@@ -87,7 +87,7 @@ def setup_dataset():
     ],
     timeout=86400, # 24 hours max
 )
-def train_model(stains: str, batch_size: int, wandb_name: str):
+def train_model(stains: str, batch_size: int, accum_steps: int, wandb_name: str):
     os.chdir("/root/UNIStainNet")
     
     # We use PYTHONPATH=. so python can find the src/ folder
@@ -100,6 +100,7 @@ def train_model(stains: str, batch_size: int, wandb_name: str):
         "--ckpt_dir", "/data/checkpoints",
         "--stains", *stains.split(),
         "--batch_size", str(batch_size),
+        "--accum_steps", str(accum_steps),
         "--wandb_name", wandb_name
     ]
     
@@ -116,6 +117,6 @@ def setup():
     setup_dataset.remote()
 
 @app.local_entrypoint()
-def train(stains: str = "ER PR", batch_size: int = 8, wandb_name: str = "ccpl_er_pr"):
+def train(stains: str = "ER PR", batch_size: int = 4, accum_steps: int = 2, wandb_name: str = "ccpl_er_pr"):
     """Run: modal run scripts/train/modal_wrapper.py::train --stains 'ER PR'"""
-    train_model.spawn(stains, batch_size, wandb_name)
+    train_model.remote(stains, batch_size, accum_steps, wandb_name)
