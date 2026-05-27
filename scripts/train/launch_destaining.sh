@@ -149,7 +149,9 @@ python scripts/train/train_mist.py \
     --wandb_name destaining_v2_attention_batch8 \
     --resume_from "$HOME/checkpoints/destaining_v2/last.ckpt"
 
-###   Ablation Study
+####################################
+#########   Ablation Study #########
+####################################
 
 # Run 1 Attention Residual with normal SPADE
 
@@ -173,11 +175,11 @@ PYTHONPATH=. python scripts/eval/eval_mist.py \
   --output_dir "./eval_output/destaining_v2_ER_PR_attn_spade_only"
 
 PYTHONPATH=. python scripts/eval/eval_mist.py \
-  --checkpoint "./checkpoints/destaining_v2_attn_spade/last.ckpt" \
+  --checkpoint "./checkpoints/destaining_v2/last.ckpt" \
   --data_dir "/home/ahmed_ayman/data/Destained_MIST" \
   --stains ER PR \
   --batch_size 4 \
-  --output_dir "./eval_output/destaining_v2_ER_PR_attn_spade_only"
+  --output_dir "./eval_output/destaining_v2_ER_PR_residual_and_normal_spade"
 
 # Run 1 Done 
 
@@ -200,9 +202,9 @@ PYTHONPATH=. python scripts/train/train_mist.py \
 # Run 2 Done
 
 # Run 3 both attention paths
-# Ongoing on Lightning AI
+# Ongoing on Knights
 PYTHONPATH=. python scripts/train/train_mist.py \
-    --data_dir "MIST" \
+    --data_dir "/home/ahmed_ayman/data/Destained_MIST" \
     --stains ER PR \
     --batch_size 4 \
     --accum_steps 2 \
@@ -211,7 +213,18 @@ PYTHONPATH=. python scripts/train/train_mist.py \
     --enable_attention_residual \
     --use_eosin_encoder \
     --use_attention_for_spade   \
-    --wandb_name destaining_v2_attention_batch4_ER_PR_Only_attn_spade_and_residual_together_fixed
+    --wandb_name destaining_v2_attention_batch4_ER_PR_Only_attn_spade_and_residual_together_fixed \
+    --log_val_fid \
+    --use_h_adapter 
+
+PYTHONPATH=. python scripts/eval/eval_mist.py \
+  --checkpoint "./checkpoints/destaining_v2_attn_spade_and_residual/last.ckpt" \
+  --data_dir "/home/ahmed_ayman/data/Destained_MIST" \
+  --stains ER PR \
+  --batch_size 4 \
+  --output_dir "./eval_output/destaining_v2_attn_spade_and_residual"
+# Done
+
 
 # Run 4 Residual with no SPADE
 PYTHONPATH=. python scripts/train/train_mist.py \
@@ -228,6 +241,7 @@ PYTHONPATH=. python scripts/train/train_mist.py \
     --wandb_name destaining_v2_attention_batch4_ER_PR_Only_residual_Only
 
 # Run 5 Normal SPADE
+# On Knights Machine
 PYTHONPATH=. python scripts/train/train_mist.py \
     --data_dir "/home/ahmed_ayman/data/Destained_MIST" \
     --stains ER PR \
@@ -238,7 +252,36 @@ PYTHONPATH=. python scripts/train/train_mist.py \
     --disable_attention_residual \
     --use_eosin_encoder \
     --no_use_attention_for_spade  \
-    --wandb_name destaining_v2_attention_batch4_ER_PR_Only_Normal_SPADE
+    --wandb_name destaining_v2_attention_batch4_ER_PR_Only_Normal_SPADE \
+    --log_val_fid \
+    --use_h_adapter
+# Done
+PYTHONPATH=. python scripts/eval/eval_mist.py \
+  --checkpoint "./checkpoints/destaining_v2_attn_Normal_SPADE/last.ckpt" \
+  --data_dir "/home/ahmed_ayman/data/Destained_MIST" \
+  --stains ER PR \
+  --batch_size 4 \
+  --output_dir "./eval_output/destaining_v2_Normal_SPADE"
+
+
+####################################
+#########  New Ideas Runs  #########
+####################################
+# 100% H&E H input with normal spade with no attention
+# Ongoing on Knights machine
+PYTHONPATH=. python scripts/train/train_mist.py \
+    --data_dir "/home/ahmed_ayman/data/Destained_MIST" \
+    --stains ER PR \
+    --batch_size 16 \
+    --accum_steps 2 \
+    --ckpt_dir "checkpoints/destaining_v2_HE_only_Normal_SPADE" \
+    --edge_encoder v2 \
+    --disable_attention_residual \
+    --use_eosin_encoder \
+    --no_use_attention_for_spade  \
+    --wandb_name destaining_v2_attention_batch16_ER_PR_Only_HE_only_Normal_SPADE_fixed \
+    --log_val_fid \
+    --resume_from "checkpoints/destaining_v2_HE_only_Normal_SPADE/last.ckpt"
 
 # To upload a model to hf
 # hf upload asserelzeki/destained_v1_UNIStainnet_v2 ./checkpoints/destaining_v2/mist_epoch=002_step=010973.ckpt
