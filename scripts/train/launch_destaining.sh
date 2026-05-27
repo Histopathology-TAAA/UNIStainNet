@@ -267,6 +267,8 @@ PYTHONPATH=. python scripts/eval/eval_mist.py \
 ####################################
 #########  New Ideas Runs  #########
 ####################################
+
+# Run 6 100% H&E H input with normal spade with no attention
 # 100% H&E H input with normal spade with no attention
 # Ongoing on Knights machine
 PYTHONPATH=. python scripts/train/train_mist.py \
@@ -282,6 +284,15 @@ PYTHONPATH=. python scripts/train/train_mist.py \
     --wandb_name destaining_v2_attention_batch16_ER_PR_Only_HE_only_Normal_SPADE_fixed \
     --log_val_fid \
     --resume_from "checkpoints/destaining_v2_HE_only_Normal_SPADE/last.ckpt"
+
+PYTHONPATH=. python scripts/eval/eval_mist.py \
+  --checkpoint "./checkpoints/destaining_v2_HE_only_Normal_SPADE/last.ckpt" \
+  --data_dir "/home/ahmed_ayman/data/Destained_MIST" \
+  --stains ER PR \
+  --batch_size 4 \
+  --output_dir "./eval_output/destaining_v2_HE_only_Normal_SPADE"
+  
+# Done
 
 # To upload a model to hf
 # hf upload asserelzeki/destained_v1_UNIStainnet_v2 ./checkpoints/destaining_v2/mist_epoch=002_step=010973.ckpt
