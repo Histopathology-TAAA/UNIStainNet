@@ -132,16 +132,16 @@ def main():
         'lpips_weight': 1.0,
         'lpips_256_weight': 0.5,
         'lpips_512_weight': 0.0,
-        'l1_fullres_weight': 1.0,
+        'l1_fullres_weight': 1.5,           # ↑ from 1.0 — more pixel pressure → better SSIM
         'lpips_fullres_weight': 1.0,
         'he_edge_weight': 0.5,
         'l1_lowres_weight': 1.0,
         'adversarial_weight': 0.0,
-        'uncond_disc_weight': 1.0,
+        'uncond_disc_weight': 2.0,          # ↑ from 1.0 — stronger unconditional realism → better FID
         'dab_intensity_weight': 0.2,
-        'dab_contrast_weight': 0.0,
+        'dab_contrast_weight': 0.2,         # ↑ from 0.0 — enforces class ordering → better DAB KL/JSD
         'dab_sharpness_weight': 0.0,
-        'gram_style_weight': 0.0,
+        'gram_style_weight': 0.5,           # ↑ from 0.0 — Gram texture matching → better FID
         'edge_weight': 0.0,
         'crop_disc_weight': 0.0,
         'feat_match_weight': 10.0,
@@ -149,13 +149,13 @@ def main():
         'bg_white_weight': 0.0,
         # IHC / DAB losses
         'ihc_edge_weight': 0.1,
-        'dab_histo_weight': 0.3,
+        'dab_histo_weight': 0.5,            # ↑ from 0.3 — Wasserstein-1 on OD distribution → better DAB KL/JSD
         'dab_block_weight': 0.5,
         'dab_block_size': 32,
         'dab_sparsity_weight': 0.3,
         'dab_sparsity_margin': 0.05,
         # Stain-conditioned discriminator
-        'proj_disc_weight': 2.0,
+        'proj_disc_weight': 3.0,            # ↑ from 2.0 — stain-conditioned realism → better FID
     }
 
     model = UNIStainNetTrainer(
