@@ -31,8 +31,7 @@ import numpy as np
 from tqdm import tqdm
 
 from src.models.trainer import UNIStainNetTrainer
-from src.data.bci_dataset import MISTCropDataModule
-from src.data.mist_dataset import STAIN_TO_LABEL
+from src.data.mist_dataset import MISTMultiStainCropDataModule, STAIN_TO_LABEL
 from src.utils.dab import DABExtractor
 from src.utils.metrics import (
     compute_image_quality_metrics,
@@ -105,8 +104,9 @@ def generate_for_stain(model, uni_model, dataloader, stain_label, guidance_scale
     all_gen, all_real, all_he, all_fnames = [], [], [], []
 
     for batch_idx, batch in enumerate(tqdm(dataloader, desc=f"Generating")):
-        he, her2, uni_sub_crops, labels, fnames = batch
+        he, her2, he_h, ihc_h, uni_sub_crops, labels, fnames = batch
         he, her2 = he.cuda().float(), her2.cuda().float()
+        he_h = he_h.cuda().float()
 
         # Override labels with stain label
         stain_labels = torch.full((he.size(0),), stain_label, device='cuda', dtype=torch.long)
@@ -118,7 +118,9 @@ def generate_for_stain(model, uni_model, dataloader, stain_label, guidance_scale
 
         gen = model.generate(he, uni, stain_labels,
                              guidance_scale=guidance_scale,
-                             seed=seed + batch_idx)
+                             seed=seed + batch_idx,
+                             edge_input=he_h,
+                             he_h=he_h)
 
         all_gen.append(gen.cpu())
         all_real.append(her2.cpu())
@@ -185,17 +187,17 @@ def main():
         print(f"{'='*50}")
 
         # Data for this stain
-        stain_data_dir = Path(args.data_dir) / stain / 'TrainValAB'
-        dm = MISTCropDataModule(
-            data_dir=str(stain_data_dir),
+        dm = MISTMultiStainCropDataModule(
+            base_dir=args.data_dir,
+            stains=[stain],
             batch_size=args.batch_size,
             num_workers=4,
             image_size=(512, 512),
             crop_size=512,
-            null_class=stain_label,  # Use stain label as the "class"
+            null_class=stain_label,
         )
         dm.setup('test')
-        test_loader = dm.test_dataloader()
+        test_loader = dm.val_dataloader()
 
         # Generate
         gen, real, he, fnames = generate_for_stain(

@@ -1016,7 +1016,8 @@ class UNIStainNetTrainer(pl.LightningModule):
 
     @torch.no_grad()
     def generate(self, he_images, uni_features, labels,
-                 num_inference_steps=None, guidance_scale=1.0, seed=None):
+                 num_inference_steps=None, guidance_scale=1.0, seed=None,
+                 edge_input=None, he_h=None):
         """Generate IHC images from H&E input.
 
         Args:
@@ -1026,6 +1027,8 @@ class UNIStainNetTrainer(pl.LightningModule):
             num_inference_steps: ignored (single forward pass)
             guidance_scale: CFG scale (1.0 = no guidance)
             seed: random seed (for reproducibility, though model is deterministic)
+            edge_input: optional 1-ch target H-channel
+            he_h: optional 1-ch source H&E H-channel for alignment
         """
         if seed is not None:
             torch.manual_seed(seed)
@@ -1033,13 +1036,13 @@ class UNIStainNetTrainer(pl.LightningModule):
         gen = self.generator_ema if hasattr(self, 'generator_ema') else self.generator
 
         if guidance_scale <= 1.0:
-            return gen(he_images, uni_features, labels)
+            return gen(he_images, uni_features, labels, edge_input=edge_input, he_h=he_h)
 
         # Classifier-free guidance
         null_labels = torch.full_like(labels, self.null_class)
 
-        output_cond = gen(he_images, uni_features, labels)
-        output_uncond = gen(he_images, uni_features, null_labels)
+        output_cond = gen(he_images, uni_features, labels, edge_input=edge_input, he_h=he_h)
+        output_uncond = gen(he_images, uni_features, null_labels, edge_input=edge_input, he_h=he_h)
 
         output = output_uncond + guidance_scale * (output_cond - output_uncond)
         return output.clamp(-1, 1)
