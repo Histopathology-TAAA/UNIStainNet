@@ -83,8 +83,8 @@ def compute_image_quality_metrics(generated, real):
     ssim = StructuralSimilarityIndexMeasure(data_range=1.0)
     ssim_vals = []
     for i in range(0, N, 16):
-        batch_gen_01 = ((generated[i:i+16] + 1) / 2).clamp(0, 1)
-        batch_real_01 = ((real[i:i+16] + 1) / 2).clamp(0, 1)
+        batch_gen_01 = ((generated[i:i+16].float() + 1) / 2).clamp(0, 1)
+        batch_real_01 = ((real[i:i+16].float() + 1) / 2).clamp(0, 1)
         batch_vals = ssim(batch_gen_01, batch_real_01)
         ssim_vals.append(batch_vals.item())
     results['ssim_mean'] = float(np.mean(ssim_vals))
@@ -94,8 +94,8 @@ def compute_image_quality_metrics(generated, real):
     psnr = PeakSignalNoiseRatio(data_range=1.0)
     psnr_vals = []
     for i in range(0, N, 16):
-        batch_gen_01 = ((generated[i:i+16] + 1) / 2).clamp(0, 1)
-        batch_real_01 = ((real[i:i+16] + 1) / 2).clamp(0, 1)
+        batch_gen_01 = ((generated[i:i+16].float() + 1) / 2).clamp(0, 1)
+        batch_real_01 = ((real[i:i+16].float() + 1) / 2).clamp(0, 1)
         batch_vals = psnr(batch_gen_01, batch_real_01)
         psnr_vals.append(batch_vals.item())
     results['psnr_mean'] = float(np.mean(psnr_vals))
@@ -125,8 +125,8 @@ def compute_image_quality_metrics(generated, real):
     # FID (Inception)
     fid = FrechetInceptionDistance(feature=2048, normalize=True)
     for i in range(0, N, 16):
-        batch_gen_01 = ((generated[i:i+16] + 1) / 2).clamp(0, 1)
-        batch_real_01 = ((real[i:i+16] + 1) / 2).clamp(0, 1)
+        batch_gen_01 = ((generated[i:i+16].float() + 1) / 2).clamp(0, 1)
+        batch_real_01 = ((real[i:i+16].float() + 1) / 2).clamp(0, 1)
         fid.update(batch_real_01, real=True)
         fid.update(batch_gen_01, real=False)
     results['fid_inception'] = float(fid.compute().item())
@@ -134,8 +134,8 @@ def compute_image_quality_metrics(generated, real):
     # KID (Kernel Inception Distance) — unbiased, better for small N
     kid = KernelInceptionDistance(feature=2048, normalize=True, subset_size=min(N, 100))
     for i in range(0, N, 16):
-        batch_gen_01 = ((generated[i:i+16] + 1) / 2).clamp(0, 1)
-        batch_real_01 = ((real[i:i+16] + 1) / 2).clamp(0, 1)
+        batch_gen_01 = ((generated[i:i+16].float() + 1) / 2).clamp(0, 1)
+        batch_real_01 = ((real[i:i+16].float() + 1) / 2).clamp(0, 1)
         kid.update(batch_real_01, real=True)
         kid.update(batch_gen_01, real=False)
     kid_mean, kid_std = kid.compute()
@@ -232,7 +232,7 @@ def compute_uni_fid(generated, real):
     def extract_cls_features(images):
         feats = []
         for i in range(0, len(images), 16):
-            batch = images[i:i+16]
+            batch = images[i:i+16].float()
             batch_01 = ((batch + 1) / 2).clamp(0, 1)
             batch_norm = torch.stack([transform(img) for img in batch_01])
             with torch.no_grad():
@@ -396,8 +396,8 @@ def compute_iod_metrics(generated, real, labels=None):
     fod_gen_list, fod_real_list = [], []
     
     for i in range(0, len(generated), 16):
-        g_batch = generated[i:i+16]
-        r_batch = real[i:i+16]
+        g_batch = generated[i:i+16].float()
+        r_batch = real[i:i+16].float()
         
         g_255 = (((g_batch + 1) / 2).clamp(0, 1) * 255.0).clamp(min=1.0)
         r_255 = (((r_batch + 1) / 2).clamp(0, 1) * 255.0).clamp(min=1.0)
@@ -491,7 +491,7 @@ def compute_downstream_metrics(generated, real, labels, train_ihc_dir):
     def extract_features_from_tensors(images):
         feats = []
         for i in range(0, len(images), 16):
-            batch = images[i:i+16]
+            batch = images[i:i+16].float()
             batch_01 = ((batch + 1) / 2).clamp(0, 1)
             batch_norm = torch.stack([uni_transform(img) for img in batch_01])
             with torch.no_grad():
@@ -596,8 +596,8 @@ def compute_he_h_ssim(generated, real, dab_extractor=None):
 
     h_gen_list, h_real_list = [], []
     for i in range(0, len(generated), 16):
-        h_gen_list.append(dab_extractor.extract_hematoxylin_intensity(generated[i:i+16].cpu(), normalize="max"))
-        h_real_list.append(dab_extractor.extract_hematoxylin_intensity(real[i:i+16].cpu(), normalize="max"))
+        h_gen_list.append(dab_extractor.extract_hematoxylin_intensity(generated[i:i+16].float().cpu(), normalize="max"))
+        h_real_list.append(dab_extractor.extract_hematoxylin_intensity(real[i:i+16].float().cpu(), normalize="max"))
         
     h_gen = torch.cat(h_gen_list)
     h_real = torch.cat(h_real_list)
@@ -646,8 +646,8 @@ def compute_he_nmi(generated, real, dab_extractor=None, n_bins=256):
 
     h_gen_list, h_real_list = [], []
     for i in range(0, len(generated), 16):
-        h_gen_list.append(dab_extractor.extract_hematoxylin_intensity(generated[i:i+16].cpu(), normalize="none"))
-        h_real_list.append(dab_extractor.extract_hematoxylin_intensity(real[i:i+16].cpu(), normalize="none"))
+        h_gen_list.append(dab_extractor.extract_hematoxylin_intensity(generated[i:i+16].float().cpu(), normalize="none"))
+        h_real_list.append(dab_extractor.extract_hematoxylin_intensity(real[i:i+16].float().cpu(), normalize="none"))
         
     h_gen = torch.cat(h_gen_list)
     h_real = torch.cat(h_real_list)
