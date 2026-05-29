@@ -76,8 +76,6 @@ def compute_image_quality_metrics(generated, real):
     from torchmetrics.image.kid import KernelInceptionDistance
     from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 
-    gen_01 = ((generated + 1) / 2).clamp(0, 1)
-    real_01 = ((real + 1) / 2).clamp(0, 1)
     N = len(generated)
     results = {}
 
@@ -85,7 +83,9 @@ def compute_image_quality_metrics(generated, real):
     ssim = StructuralSimilarityIndexMeasure(data_range=1.0)
     ssim_vals = []
     for i in range(0, N, 16):
-        batch_vals = ssim(gen_01[i:i+16], real_01[i:i+16])
+        batch_gen_01 = ((generated[i:i+16].float() + 1) / 2).clamp(0, 1)
+        batch_real_01 = ((real[i:i+16].float() + 1) / 2).clamp(0, 1)
+        batch_vals = ssim(batch_gen_01, batch_real_01)
         ssim_vals.append(batch_vals.item())
     results['ssim_mean'] = float(np.mean(ssim_vals))
     results['ssim_std'] = float(np.std(ssim_vals))
@@ -94,7 +94,9 @@ def compute_image_quality_metrics(generated, real):
     psnr = PeakSignalNoiseRatio(data_range=1.0)
     psnr_vals = []
     for i in range(0, N, 16):
-        batch_vals = psnr(gen_01[i:i+16], real_01[i:i+16])
+        batch_gen_01 = ((generated[i:i+16].float() + 1) / 2).clamp(0, 1)
+        batch_real_01 = ((real[i:i+16].float() + 1) / 2).clamp(0, 1)
+        batch_vals = psnr(batch_gen_01, batch_real_01)
         psnr_vals.append(batch_vals.item())
     results['psnr_mean'] = float(np.mean(psnr_vals))
     results['psnr_std'] = float(np.std(psnr_vals))
@@ -110,7 +112,7 @@ def compute_image_quality_metrics(generated, real):
             lpips_vals.append(val)
     results['lpips_mean'] = float(np.mean(lpips_vals)) if lpips_vals else float('nan')
 
-    # LPIPS downsampled (128x128) — more robust for weakly paired consecutive sections
+    # LPIPS downsampled (128x128)
     lpips_ds_vals = []
     for i in range(0, N, 8):
         batch_gen = F.interpolate(generated[i:i+8].float().clamp(-1, 1), size=128, mode='bilinear', align_corners=False)
@@ -123,15 +125,19 @@ def compute_image_quality_metrics(generated, real):
     # FID (Inception)
     fid = FrechetInceptionDistance(feature=2048, normalize=True)
     for i in range(0, N, 16):
-        fid.update(real_01[i:i+16], real=True)
-        fid.update(gen_01[i:i+16], real=False)
+        batch_gen_01 = ((generated[i:i+16].float() + 1) / 2).clamp(0, 1)
+        batch_real_01 = ((real[i:i+16].float() + 1) / 2).clamp(0, 1)
+        fid.update(batch_real_01, real=True)
+        fid.update(batch_gen_01, real=False)
     results['fid_inception'] = float(fid.compute().item())
 
-    # KID (Kernel Inception Distance) — unbiased, better for small N
+    # KID (Kernel Inception Distance)
     kid = KernelInceptionDistance(feature=2048, normalize=True, subset_size=min(N, 100))
     for i in range(0, N, 16):
-        kid.update(real_01[i:i+16], real=True)
-        kid.update(gen_01[i:i+16], real=False)
+        batch_gen_01 = ((generated[i:i+16].float() + 1) / 2).clamp(0, 1)
+        batch_real_01 = ((real[i:i+16].float() + 1) / 2).clamp(0, 1)
+        kid.update(batch_real_01, real=True)
+        kid.update(batch_gen_01, real=False)
     kid_mean, kid_std = kid.compute()
     results['kid_mean'] = float(kid_mean.item())
     results['kid_std'] = float(kid_std.item())
@@ -163,29 +169,21 @@ def compute_he_structure_metrics(generated, he_reference, resize_to=256):
     """
     from torchmetrics.image import StructuralSimilarityIndexMeasure
 
-    gen = F.interpolate(generated.float(), size=resize_to, mode='bilinear', align_corners=False)
-    he = F.interpolate(he_reference.float(), size=resize_to, mode='bilinear', align_corners=False)
+    ssim_vals = []
+    for i in range(0, len(generated), 16):
+        gen = F.interpolate(generated[i:i+16].float(), size=resize_to, mode='bilinear', align_corners=False)
+        he = F.interpolate(he_reference[i:i+16].float(), size=resize_to, mode='bilinear', align_corners=False)
 
-    gen_gray = gen.mean(dim=1, keepdim=True)
-    he_gray = he.mean(dim=1, keepdim=True)
+        gen_gray = gen.mean(dim=1, keepdim=True)
+        he_gray = he.mean(dim=1, keepdim=True)
 
-    sobel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]],
-                           dtype=torch.float32, device=gen.device).view(1, 1, 3, 3)
-    sobel_y = sobel_x.transpose(-1, -2)
+        gen_edge = _edge_map(gen_gray)
+        he_edge = _edge_map(he_gray)
 
-    def _edge_map(x):
-        gx = F.conv2d(x, sobel_x, padding=1)
-        gy = F.conv2d(x, sobel_y, padding=1)
-        edge = (gx ** 2 + gy ** 2 + 1e-8).sqrt()
-        edge = edge / (edge.amax(dim=(1, 2, 3), keepdim=True) + 1e-8)
-        return edge.clamp(0, 1)
+        ssim_vals.append(ssim(gen_edge, he_edge).item())
 
-    gen_edge = _edge_map(gen_gray)
-    he_edge = _edge_map(he_gray)
-
-    ssim = StructuralSimilarityIndexMeasure(data_range=1.0)
     return {
-        'he_structure_ssim': float(ssim(gen_edge, he_edge).item()),
+        'he_structure_ssim': float(np.mean(ssim_vals)),
     }
 
 
@@ -221,7 +219,7 @@ def compute_uni_fid(generated, real):
     def extract_cls_features(images):
         feats = []
         for i in range(0, len(images), 16):
-            batch = images[i:i+16]
+            batch = images[i:i+16].float()
             batch_01 = ((batch + 1) / 2).clamp(0, 1)
             batch_norm = torch.stack([transform(img) for img in batch_01])
             with torch.no_grad():
@@ -268,8 +266,13 @@ def compute_dab_metrics(generated, real, labels=None, dab_extractor=None):
     if dab_extractor is None:
         dab_extractor = DABExtractor(device='cpu')
 
-    dab_gen = dab_extractor.extract_dab_intensity(generated.float(), normalize="none")
-    dab_real = dab_extractor.extract_dab_intensity(real.float(), normalize="none")
+    dab_gen_list, dab_real_list = [], []
+    for i in range(0, len(generated), 16):
+        dab_gen_list.append(dab_extractor.extract_dab_intensity(generated[i:i+16].float(), normalize="none"))
+        dab_real_list.append(dab_extractor.extract_dab_intensity(real[i:i+16].float(), normalize="none"))
+        
+    dab_gen = torch.cat(dab_gen_list)
+    dab_real = torch.cat(dab_real_list)
 
     gen_scores = compute_p90_scores(dab_gen)
     real_scores = compute_p90_scores(dab_real)
@@ -374,21 +377,38 @@ def compute_iod_metrics(generated, real, labels=None):
     Returns:
         dict with IOD metric values
     """
-    gen_255 = (((generated + 1) / 2).clamp(0, 1) * 255.0).clamp(min=1.0)
-    real_255 = (((real + 1) / 2).clamp(0, 1) * 255.0).clamp(min=1.0)
+    miod_gen_list, miod_real_list = [], []
+    iod_gen_list, iod_real_list = [], []
+    fod_gen_list, fod_real_list = [], []
+    
+    for i in range(0, len(generated), 16):
+        g_batch = generated[i:i+16].float()
+        r_batch = real[i:i+16].float()
+        
+        g_255 = (((g_batch + 1) / 2).clamp(0, 1) * 255.0).clamp(min=1.0)
+        r_255 = (((r_batch + 1) / 2).clamp(0, 1) * 255.0).clamp(min=1.0)
 
-    od_gen = -torch.log10(gen_255 / 255.0)
-    od_real = -torch.log10(real_255 / 255.0)
+        od_gen = -torch.log10(g_255 / 255.0)
+        od_real = -torch.log10(r_255 / 255.0)
 
-    miod_gen = od_gen.mean(dim=(1, 2, 3)).numpy()
-    miod_real = od_real.mean(dim=(1, 2, 3)).numpy()
+        miod_gen_list.append(od_gen.mean(dim=(1, 2, 3)).numpy())
+        miod_real_list.append(od_real.mean(dim=(1, 2, 3)).numpy())
 
-    iod_gen = od_gen.sum(dim=(1, 2, 3)).numpy()
-    iod_real = od_real.sum(dim=(1, 2, 3)).numpy()
+        iod_gen_list.append(od_gen.sum(dim=(1, 2, 3)).numpy())
+        iod_real_list.append(od_real.sum(dim=(1, 2, 3)).numpy())
 
-    alpha = 1.8
-    fod_gen = od_gen.pow(alpha).mean(dim=(1, 2, 3)).numpy()
-    fod_real = od_real.pow(alpha).mean(dim=(1, 2, 3)).numpy()
+        alpha = 1.8
+        fod_gen_list.append(od_gen.pow(alpha).mean(dim=(1, 2, 3)).numpy())
+        fod_real_list.append(od_real.pow(alpha).mean(dim=(1, 2, 3)).numpy())
+
+    miod_gen = np.concatenate(miod_gen_list)
+    miod_real = np.concatenate(miod_real_list)
+    iod_gen = np.concatenate(iod_gen_list)
+    iod_real = np.concatenate(iod_real_list)
+    fod_gen = np.concatenate(fod_gen_list)
+    fod_real = np.concatenate(fod_real_list)
+
+
 
     results = {}
     results['miod_diff'] = float(np.mean(miod_gen) - np.mean(miod_real))
@@ -566,8 +586,13 @@ def compute_he_h_ssim(generated, real, dab_extractor=None):
         dab_extractor = DABExtractor(device='cpu')
 
     # Extract H-maps (normalize to [0, 1] for SSIM)
-    h_gen = dab_extractor.extract_hematoxylin_intensity(generated.cpu(), normalize="max")
-    h_real = dab_extractor.extract_hematoxylin_intensity(real.cpu(), normalize="max")
+    h_gen_list, h_real_list = [], []
+    for i in range(0, len(generated), 16):
+        h_gen_list.append(dab_extractor.extract_hematoxylin_intensity(generated[i:i+16].float().cpu(), normalize="max"))
+        h_real_list.append(dab_extractor.extract_hematoxylin_intensity(real[i:i+16].float().cpu(), normalize="max"))
+        
+    h_gen = torch.cat(h_gen_list)
+    h_real = torch.cat(h_real_list)
 
     # Ensure [0, 1] range
     h_gen = (h_gen - h_gen.min()) / (h_gen.max() - h_gen.min() + 1e-6)
@@ -612,8 +637,13 @@ def compute_he_nmi(generated, real, dab_extractor=None, n_bins=256):
         dab_extractor = DABExtractor(device='cpu')
 
     # Extract H-maps [N, H, W] and flatten per image
-    h_gen = dab_extractor.extract_hematoxylin_intensity(generated.cpu(), normalize="none")
-    h_real = dab_extractor.extract_hematoxylin_intensity(real.cpu(), normalize="none")
+    h_gen_list, h_real_list = [], []
+    for i in range(0, len(generated), 16):
+        h_gen_list.append(dab_extractor.extract_hematoxylin_intensity(generated[i:i+16].float().cpu(), normalize="none"))
+        h_real_list.append(dab_extractor.extract_hematoxylin_intensity(real[i:i+16].float().cpu(), normalize="none"))
+        
+    h_gen = torch.cat(h_gen_list)
+    h_real = torch.cat(h_real_list)
 
     nmi_vals = []
     for i in range(len(h_gen)):

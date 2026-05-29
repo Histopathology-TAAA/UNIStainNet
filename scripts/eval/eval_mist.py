@@ -122,9 +122,9 @@ def generate_for_stain(model, uni_model, dataloader, stain_label, guidance_scale
                              edge_input=he_h,
                              he_h=he_h)
 
-        all_gen.append(gen.cpu())
-        all_real.append(her2.cpu())
-        all_he.append(he.cpu())
+        all_gen.append(gen.cpu().to(torch.float16))
+        all_real.append(her2.cpu().to(torch.float16))
+        all_he.append(he.cpu().to(torch.float16))
         all_fnames.extend(fnames)
 
     return torch.cat(all_gen), torch.cat(all_real), torch.cat(all_he), all_fnames
@@ -260,6 +260,11 @@ def main():
               f"Pearson-r={dab.get('dab_pearson_r', 0):.3f} | "
               f"HE-H-SSIM={he_struct['he_h_ssim_mean']:.3f} | "
               f"HE-NMI={he_struct['he_nmi_mean']:.3f}")
+
+        # Explicitly free memory before next stain
+        del gen, real, he, fnames
+        import gc
+        gc.collect()
 
     # Free UNI model
     del uni_model
