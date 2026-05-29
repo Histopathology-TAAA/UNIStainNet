@@ -185,7 +185,7 @@ def main():
         print(f"{'='*50}")
 
         # Data for this stain
-        stain_data_dir = Path(args.data_dir) / stain / 'TrainValAB'
+        stain_data_dir = Path(args.data_dir) / stain 
         dm = MISTCropDataModule(
             data_dir=str(stain_data_dir),
             batch_size=args.batch_size,
