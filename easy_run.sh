@@ -169,39 +169,38 @@ echo "========================================================"
 
 mkdir -p "$CKPT_DIR"
 
-# python scripts/train/train_mist.py \
-#     --data_dir   "$DATA_DIR" \
-#     --stains     $STAINS \
-#     --batch_size 8 \
-#     --max_epochs 100 \
-#     --ckpt_dir   "$CKPT_DIR" \
-#     --wandb_name destaining_v1_attention_batch8_${STAINS// /_}
-
 PYTHONPATH=. python scripts/train/train_mist.py \
     --data_dir   "$DATA_DIR" \
-    --stains     $STAINS \
+    --stains     ER PR \
     --batch_size 8 \
-    --ckpt_dir "checkpoints/destaining_v2_attn_residual_only" \
+    --ckpt_dir "checkpoints/destaining_v2_attn_spade_new_weights" \
     --edge_encoder v2 \
-    --enable_attention_residual \
+    --disable_attention_residual \
     --use_eosin_encoder \
-    --no_spade_use_uni \
-    --no_use_attention_for_spade  \
-    --wandb_name destaining_v2_attention_batch4_ER_PR_Only_residual_Only
+    --use_attention_for_spade   \
+    --wandb_name destaining_v2_attention_batch4_ER_PR_Only_attn_spade_Only_new_weights \
+    --log_val_fid
 
 # For Resuming from a checkpoint, use the following command (uncomment and adjust the --ckpt_dir and --wandb_name as needed):
 # PYTHONPATH=. python scripts/train/train_mist.py \
 #     --data_dir   "$DATA_DIR" \
-#     --stains     $STAINS \
+#     --stains     ER PR \
 #     --batch_size 8 \
-#     --ckpt_dir "checkpoints/destaining_v2_attn_residual_only" \
+#     --ckpt_dir "checkpoints/destaining_v2_attn_spade_new_weights" \
 #     --edge_encoder v2 \
-#     --enable_attention_residual \
+#     --disable_attention_residual \
 #     --use_eosin_encoder \
-#     --no_spade_use_uni \
-#     --no_use_attention_for_spade  \
-#     --wandb_name destaining_v2_attention_batch4_ER_PR_Only_residual_Only \
+#     --use_attention_for_spade   \
+#     --wandb_name destaining_v2_attention_batch4_ER_PR_Only_attn_spade_Only_new_weights \
 #     --log_val_fid \
-#     --resume_from "checkpoints/destaining_v2_attn_residual_only/last.ckpt"
+#     --resume_from "checkpoints/destaining_v2_attn_spade_new_weights/last.ckpt"
+
+# for evaluation only : 
+
+# python scripts/evaluate_mist.py \
+#     --data_dir   "$DATA_DIR" \
+#     --stains     ER PR \
+#     --batch_size 8 \
+#     --ckpt_dir "checkpoints/destaining_v2_attn_spade_new_weights" \
 
 echo "  Training process initiated."
