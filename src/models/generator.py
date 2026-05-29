@@ -196,12 +196,18 @@ class SPADEUNetGenerator(nn.Module):
         e4 = self.enc4(e3)
         return {1: e1, 2: e2, 3: e3, 4: e4}
 
-    def forward(self, he_images, uni_features, labels):
+    def forward(self, he_images, uni_features, labels, edge_input=None):
         """
         Args:
-            he_images: [B, 3, H, H] in [-1, 1] where H=512 or H=1024
+            he_images:    [B, 3, H, H] in [-1, 1] where H=512 or H=1024
             uni_features: [B, N, 1024] where N=16 (4x4 CLS) or N=1024 (32x32 patch)
-            labels: [B] int class labels (0-4)
+            labels:       [B] int class labels (0-4)
+            edge_input:   [B, 1, H, H] in [-1, 1] or None.
+                          When provided, this single-channel image is used as the
+                          edge-encoder input instead of he_images.
+                          - Case A: H-channel of the true IHC
+                          - Case B: H-channel of the H&E
+                          When None, he_images is used (legacy behaviour).
 
         Returns:
             output: [B, 3, H, H] in [-1, 1]
@@ -209,14 +215,22 @@ class SPADEUNetGenerator(nn.Module):
         class_emb = self.class_embed(labels)
         uni_maps = self.uni_processor(uni_features)
 
-        # Edge encoder (parallel structure pathway)
-        # Edge encoder always operates at 512 resolution
+        # Edge encoder (parallel structure pathway).
+        # Always receives a 1-ch H-channel tensor [B, 1, H, H].
+        # edge_input (provided by trainer): either IHC H-channel (Case A) or
+        # H&E H-channel (Case B). When None (legacy), grayscale of he_images is used.
         if self.edge_encoder_type:
-            if self.image_size == 1024:
-                he_512 = F.interpolate(he_images, size=512, mode='bilinear', align_corners=False)
-                edge_maps = self.edge_encoder(he_512)
+            if edge_input is not None:
+                edge_src = edge_input  # [B, 1, H, H] — pass directly
             else:
-                edge_maps = self.edge_encoder(he_images)
+                # Fallback: derive 1-ch grayscale from H&E RGB
+                edge_src = he_images.mean(dim=1, keepdim=True)  # [B, 1, H, H]
+
+            if self.image_size == 1024:
+                edge_src_512 = F.interpolate(edge_src, size=512, mode='bilinear', align_corners=False)
+                edge_maps = self.edge_encoder(edge_src_512)
+            else:
+                edge_maps = self.edge_encoder(edge_src)
         else:
             edge_maps = None
 

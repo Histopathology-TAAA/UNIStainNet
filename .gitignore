@@ -21,3 +21,6 @@ jobs/
 
 .DS_Store
 Thumbs.db
+.venv/
+venv/
+env/

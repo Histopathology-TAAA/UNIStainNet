@@ -104,6 +104,8 @@ class UNIStainNetTrainer(pl.LightningModule):
         uni_spade_at_512=False,
         # Per-label names for multi-stain logging
         label_names=None,
+        # Case A/B H-channel training switch
+        case_a_prob=0.0,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -493,13 +495,21 @@ class UNIStainNetTrainer(pl.LightningModule):
 
         Extracts Sobel edges from H&E input and generated output, then
         computes L1 loss between edge maps at multiple scales.
+        Used in Case B (he_input is H-channel of H&E, or H&E RGB).
         """
         with torch.amp.autocast('cuda', enabled=False):
             gen = generated.float()
             he = he_input.float()
 
-            gen_gray = ((gen + 1) / 2).mean(dim=1, keepdim=True)
-            he_gray = ((he + 1) / 2).mean(dim=1, keepdim=True)
+            # Support both 1-ch (H-channel) and 3-ch (RGB) inputs
+            if gen.shape[1] == 3:
+                gen_gray = ((gen + 1) / 2).mean(dim=1, keepdim=True)
+            else:
+                gen_gray = (gen + 1) / 2
+            if he.shape[1] == 3:
+                he_gray = ((he + 1) / 2).mean(dim=1, keepdim=True)
+            else:
+                he_gray = (he + 1) / 2
 
             sobel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]],
                                    dtype=torch.float32, device=gen.device).view(1, 1, 3, 3)
@@ -569,8 +579,20 @@ class UNIStainNetTrainer(pl.LightningModule):
             return loss / len(gen_feats)
 
     def training_step(self, batch, batch_idx):
-        he, her2, uni_or_crops, labels, fnames = batch
+        he, her2, he_h, ihc_h, uni_or_crops, labels, fnames = batch
         opt_g, opt_d = self.optimizers()
+
+        # ----------------------------------------------------------------
+        # Case A / Case B selection
+        # ----------------------------------------------------------------
+        # Case A: edge encoder receives IHC H-channel (true target structure)
+        #         he_edge_weight loss is against IHC H-channel at full-res only
+        # Case B: edge encoder receives H&E H-channel (default behaviour)
+        #         he_edge_weight loss is multi-scale against H&E H-channel
+        use_case_a = (self.hparams.case_a_prob > 0.0 and
+                      torch.rand(1).item() < self.hparams.case_a_prob)
+        # edge_input: [B, 1, H, W] passed to generator
+        edge_input = ihc_h if use_case_a else he_h
 
         # On-the-fly UNI extraction: dataset returns [B, 16, 3, 224, 224] sub-crops
         if self._uni_extract_on_the_fly:
@@ -592,36 +614,57 @@ class UNIStainNetTrainer(pl.LightningModule):
         # ----------------------------------------------------------------
         # Generator step
         # ----------------------------------------------------------------
-        generated = self.generator(he, uni_dropped, labels_dropped)
+        generated = self.generator(he, uni_dropped, labels_dropped, edge_input=edge_input)
 
-        # LPIPS main: 4x downsample (128 for 512 input, 256 for 1024)
-        lpips_main_size = self.hparams.image_size // 4
-        gen_lpips = F.interpolate(generated, size=lpips_main_size, mode='bilinear', align_corners=False)
-        her2_lpips = F.interpolate(her2, size=lpips_main_size, mode='bilinear', align_corners=False)
-        loss_lpips = self.lpips_fn(gen_lpips, her2_lpips).mean()
+        # ---- LPIPS losses ----
+        # Case A: full-resolution LPIPS (IHC H-channel drives structure, so pixel
+        #         pressure at full res is meaningful and aligned).
+        # Case B: standard 4x-downscale LPIPS (128px for 512 input).
+        if use_case_a:
+            # Full-resolution LPIPS
+            loss_lpips = self.lpips_fn(generated, her2).mean()
+            loss_g = self.hparams.lpips_weight * loss_lpips
+            # Also compute fine LPIPS at half-res if weight > 0
+            if self.hparams.lpips_256_weight > 0:
+                lpips_fine_size = self.hparams.image_size // 2
+                gen_fine = F.interpolate(generated, size=lpips_fine_size, mode='bilinear', align_corners=False)
+                her2_fine = F.interpolate(her2, size=lpips_fine_size, mode='bilinear', align_corners=False)
+                loss_lpips_256 = self.lpips_fn(gen_fine, her2_fine).mean()
+                loss_g = loss_g + self.hparams.lpips_256_weight * loss_lpips_256
+                self.log('train/lpips_fine', loss_lpips_256, prog_bar=False)
+        else:
+            # Standard: 4x downsample
+            lpips_main_size = self.hparams.image_size // 4
+            gen_lpips = F.interpolate(generated, size=lpips_main_size, mode='bilinear', align_corners=False)
+            her2_lpips = F.interpolate(her2, size=lpips_main_size, mode='bilinear', align_corners=False)
+            loss_lpips = self.lpips_fn(gen_lpips, her2_lpips).mean()
+            loss_g = self.hparams.lpips_weight * loss_lpips
 
-        loss_g = self.hparams.lpips_weight * loss_lpips
+            # LPIPS fine: 2x downsample
+            if self.hparams.lpips_256_weight > 0:
+                lpips_fine_size = self.hparams.image_size // 2
+                gen_fine = F.interpolate(generated, size=lpips_fine_size, mode='bilinear', align_corners=False)
+                her2_fine = F.interpolate(her2, size=lpips_fine_size, mode='bilinear', align_corners=False)
+                loss_lpips_256 = self.lpips_fn(gen_fine, her2_fine).mean()
+                loss_g = loss_g + self.hparams.lpips_256_weight * loss_lpips_256
+                self.log('train/lpips_fine', loss_lpips_256, prog_bar=False)
 
-        # LPIPS fine: 2x downsample (256 for 512 input, 512 for 1024)
-        if self.hparams.lpips_256_weight > 0:
-            lpips_fine_size = self.hparams.image_size // 2
-            gen_fine = F.interpolate(generated, size=lpips_fine_size, mode='bilinear', align_corners=False)
-            her2_fine = F.interpolate(her2, size=lpips_fine_size, mode='bilinear', align_corners=False)
-            loss_lpips_256 = self.lpips_fn(gen_fine, her2_fine).mean()
-            loss_g = loss_g + self.hparams.lpips_256_weight * loss_lpips_256
-            self.log('train/lpips_fine', loss_lpips_256, prog_bar=False)
-
-        # LPIPS at full resolution (expensive)
-        if self.hparams.lpips_512_weight > 0:
+        # LPIPS at full resolution (expensive) — only if weight > 0 and NOT already Case A
+        if self.hparams.lpips_512_weight > 0 and not use_case_a:
             loss_lpips_512 = self.lpips_fn(generated, her2).mean()
             loss_g = loss_g + self.hparams.lpips_512_weight * loss_lpips_512
             self.log('train/lpips_fullres', loss_lpips_512, prog_bar=False)
 
-        # Low-resolution L1 (color fidelity, misalignment-robust at 64x64)
+        # Low-resolution L1 (color fidelity)
+        # Case A: full-resolution (IHC H-channel structure guidance allows pixel pressure)
+        # Case B: 64px (misalignment-robust)
         if self.hparams.l1_lowres_weight > 0:
-            gen_64 = F.interpolate(generated, size=64, mode='bilinear', align_corners=False)
-            her2_64 = F.interpolate(her2, size=64, mode='bilinear', align_corners=False)
-            loss_l1_lowres = F.l1_loss(gen_64, her2_64)
+            if use_case_a:
+                loss_l1_lowres = F.l1_loss(generated, her2)
+            else:
+                gen_64 = F.interpolate(generated, size=64, mode='bilinear', align_corners=False)
+                her2_64 = F.interpolate(her2, size=64, mode='bilinear', align_corners=False)
+                loss_l1_lowres = F.l1_loss(gen_64, her2_64)
             loss_g = loss_g + self.hparams.l1_lowres_weight * loss_l1_lowres
             self.log('train/l1_lowres', loss_l1_lowres, prog_bar=False)
 
@@ -654,9 +697,15 @@ class UNIStainNetTrainer(pl.LightningModule):
             loss_g = loss_g + self.hparams.gram_style_weight * loss_gram
             self.log('train/gram_style', loss_gram, prog_bar=False)
 
-        # H&E edge structure preservation (pixel-aligned)
+        # H&E / IHC H-channel edge loss (Case A or Case B)
+        # Both cases use the same multi-scale Sobel loss (compute_he_edge_loss).
+        # Case A: target is IHC H-channel (1-ch)
+        # Case B: target is H&E H-channel (1-ch)
         if self.hparams.he_edge_weight > 0:
-            loss_he_edge = self.compute_he_edge_loss(generated, he)
+            if use_case_a:
+                loss_he_edge = self.compute_he_edge_loss(generated, ihc_h)
+            else:
+                loss_he_edge = self.compute_he_edge_loss(generated, he_h)
             loss_g = loss_g + self.hparams.he_edge_weight * loss_he_edge
             self.log('train/he_edge', loss_he_edge, prog_bar=False)
 
@@ -749,7 +798,7 @@ class UNIStainNetTrainer(pl.LightningModule):
         loss_uncond_d = torch.tensor(0.0, device=self.device)
         if self.global_step >= self.hparams.adversarial_start_step and any_adv:
             with torch.no_grad():
-                fake_detached = self.generator(he, uni_dropped, labels_dropped)
+                fake_detached = self.generator(he, uni_dropped, labels_dropped, edge_input=edge_input)
 
             # For 1024, downsample for disc
             if img_sz == 1024:
@@ -834,6 +883,7 @@ class UNIStainNetTrainer(pl.LightningModule):
         self.log('train/lpips', loss_lpips, prog_bar=True)
         self.log('train/adversarial', loss_adv, prog_bar=False)
         self.log('train/lr_scale', lr_scale, prog_bar=False)
+        self.log('train/case_a_active', float(use_case_a), prog_bar=False)
         if self.crop_discriminator is not None:
             self.log('train/crop_adv_g', loss_crop_adv, prog_bar=False)
             self.log('train/crop_adv_d', loss_crop_d, prog_bar=False)
@@ -869,7 +919,10 @@ class UNIStainNetTrainer(pl.LightningModule):
             })
 
     def validation_step(self, batch, batch_idx):
-        he, her2, uni_or_crops, labels, fnames = batch
+        he, her2, he_h, ihc_h, uni_or_crops, labels, fnames = batch
+        # Validation always uses Case B (H&E H-channel as edge input)
+        # — we never have ground-truth IHC at inference time.
+        edge_input = he_h  # [B, 1, H, W]
 
         # On-the-fly UNI extraction
         if self._uni_extract_on_the_fly:
@@ -885,7 +938,7 @@ class UNIStainNetTrainer(pl.LightningModule):
 
         # Use EMA generator
         with torch.no_grad():
-            generated = self.generator_ema(he, uni, labels)
+            generated = self.generator_ema(he, uni, labels, edge_input=edge_input)
 
         # LPIPS (4x downsample: 128 for 512, 256 for 1024)
         lpips_size = self.hparams.image_size // 4

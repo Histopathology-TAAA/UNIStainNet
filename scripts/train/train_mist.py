@@ -37,6 +37,10 @@ def main():
                         help='Wandb run name')
     parser.add_argument('--resume_from', type=str, default=None,
                         help='Resume from checkpoint path')
+    parser.add_argument('--case_a_prob', type=float, default=0.0,
+                        help='Probability of choosing Case A (IHC H-channel as edge input) '
+                             'per training step. 0.0=always Case B, 1.0=always Case A. '
+                             'Default: 0.0 (pure Case B, original behaviour)')
     args = parser.parse_args()
 
     print("=" * 70)
@@ -91,6 +95,8 @@ def main():
         # On-the-fly UNI extraction
         extract_uni_on_the_fly=True,
         uni_spatial_pool_size=32,
+        # Case A/B H-channel training switch
+        case_a_prob=args.case_a_prob,
     )
 
     dm = MISTMultiStainCropDataModule(
