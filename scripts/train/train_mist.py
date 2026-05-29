@@ -41,6 +41,8 @@ def main():
                         help='Probability of choosing Case A (IHC H-channel as edge input) '
                              'per training step. 0.0=always Case B, 1.0=always Case A. '
                              'Default: 0.0 (pure Case B, original behaviour)')
+    parser.add_argument('--use_alignment', action='store_true',
+                        help='Enable Spatial Alignment Network (STN) for fixing misalignment in Case A.')
     args = parser.parse_args()
 
     print("=" * 70)
@@ -97,6 +99,8 @@ def main():
         uni_spatial_pool_size=32,
         # Case A/B H-channel training switch
         case_a_prob=args.case_a_prob,
+        # Spatial Alignment Network (STN)
+        use_alignment=args.use_alignment,
     )
 
     dm = MISTMultiStainCropDataModule(

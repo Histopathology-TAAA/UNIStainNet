@@ -12,6 +12,71 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+def warp_features(x, flow):
+    """Warps feature map x using the normalized displacement flow.
+    
+    Args:
+        x: [B, C, H, W] features
+        flow: [B, 2, H_orig, W_orig] displacement field at any resolution
+              (values in normalized [-1, 1] range relative to image size)
+    Returns:
+        warped_x: [B, C, H, W] features shifted by the flow field.
+    """
+    B, C, H, W = x.shape
+    
+    # Downsample flow to match feature map resolution if needed
+    if flow.shape[-1] != W or flow.shape[-2] != H:
+        flow_down = F.interpolate(flow, size=(H, W), mode='bilinear', align_corners=False)
+    else:
+        flow_down = flow
+
+    # Create base grid [-1, 1] for this resolution
+    grid_y, grid_x = torch.meshgrid(
+        torch.linspace(-1, 1, H, device=x.device), 
+        torch.linspace(-1, 1, W, device=x.device), 
+        indexing='ij'
+    )
+    base_grid = torch.stack([grid_x, grid_y], dim=-1)  # [H, W, 2]
+    base_grid = base_grid.unsqueeze(0).expand(B, -1, -1, -1) # [B, H, W, 2]
+    
+    # flow_down is [B, 2, H, W]. Permute to [B, H, W, 2] and add
+    warped_grid = base_grid + flow_down.permute(0, 2, 3, 1)
+    
+    return F.grid_sample(x, warped_grid, mode='bilinear', padding_mode='reflection', align_corners=True)
+
+
+class AlignmentNetwork(nn.Module):
+    """Spatial Transformer Network to align features to a target structure.
+    
+    Predicts a dense optical-flow-like displacement field from a source
+    and target image. Final layer is zero-initialized so it starts as
+    an identity transformation (zero flow).
+    """
+    def __init__(self):
+        super().__init__()
+        # Input: concat(source_h, target_h) = 2 channels
+        self.net = nn.Sequential(
+            nn.Conv2d(2, 32, 7, padding=3),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(32, 64, 5, padding=2, stride=2), # downsample
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(64, 64, 3, padding=1),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.ConvTranspose2d(64, 32, 4, stride=2, padding=1), # upsample
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(32, 2, 3, padding=1) # 2 channels for x,y flow
+        )
+        # Zero-initialize the final convolution for identity transform
+        nn.init.zeros_(self.net[-1].weight)
+        if self.net[-1].bias is not None:
+            nn.init.zeros_(self.net[-1].bias)
+
+    def forward(self, src_h, tgt_h):
+        # Scale input H-channels to [0, 1] for better flow processing
+        src = (src_h + 1) / 2
+        tgt = (tgt_h + 1) / 2
+        return self.net(torch.cat([src, tgt], dim=1))
+
 from src.models.blocks import SPADEBlock, ResBlock, SelfAttention
 from src.models.edge_encoder import EdgeEncoder, MultiScaleEdgeEncoder
 from src.models.uni_processor import UNIFeatureProcessor, UNIFeatureProcessorHighRes
@@ -29,7 +94,8 @@ class SPADEUNetGenerator(nn.Module):
 
     def __init__(self, num_classes=5, class_dim=64, uni_dim=1024,
                  input_skip=False, edge_encoder=False, edge_base_ch=32,
-                 uni_spatial_size=4, image_size=512, uni_spade_at_512=False):
+                 uni_spatial_size=4, image_size=512, uni_spade_at_512=False,
+                 use_alignment=False):
         super().__init__()
         self.num_classes = num_classes
         self.class_dim = class_dim
@@ -38,6 +104,7 @@ class SPADEUNetGenerator(nn.Module):
         self.uni_spatial_size = uni_spatial_size
         self.image_size = image_size
         self.uni_spade_at_512 = uni_spade_at_512
+        self.use_alignment = use_alignment
 
         # Class embedding (5 classes: 0, 1+, 2+, 3+, null)
         self.class_embed = nn.Embedding(num_classes, class_dim)
@@ -173,6 +240,9 @@ class SPADEUNetGenerator(nn.Module):
                 nn.Tanh(),
             )
 
+        if self.use_alignment:
+            self.alignment_net = AlignmentNetwork()
+
     def encode(self, images):
         """Extract intermediate encoder features for PatchNCE loss.
 
@@ -196,18 +266,14 @@ class SPADEUNetGenerator(nn.Module):
         e4 = self.enc4(e3)
         return {1: e1, 2: e2, 3: e3, 4: e4}
 
-    def forward(self, he_images, uni_features, labels, edge_input=None):
+    def forward(self, he_images, uni_features, labels, edge_input=None, he_h=None):
         """
         Args:
             he_images:    [B, 3, H, H] in [-1, 1] where H=512 or H=1024
             uni_features: [B, N, 1024] where N=16 (4x4 CLS) or N=1024 (32x32 patch)
             labels:       [B] int class labels (0-4)
-            edge_input:   [B, 1, H, H] in [-1, 1] or None.
-                          When provided, this single-channel image is used as the
-                          edge-encoder input instead of he_images.
-                          - Case A: H-channel of the true IHC
-                          - Case B: H-channel of the H&E
-                          When None, he_images is used (legacy behaviour).
+            edge_input:   [B, 1, H, H] in [-1, 1] or None. Target H-channel structure.
+            he_h:         [B, 1, H, H] in [-1, 1] or None. Source H&E H-channel. Used for alignment.
 
         Returns:
             output: [B, 3, H, H] in [-1, 1]
@@ -248,6 +314,29 @@ class SPADEUNetGenerator(nn.Module):
         e3 = self.enc3(e2)          # [B, 256, 64, 64]
         e4 = self.enc4(e3)          # [B, 512, 32, 32]
         e5 = self.enc5(e4)          # [B, 512, 16, 16]
+
+        # Alignment Network (STN) Feature Warping
+        if self.use_alignment and he_h is not None and edge_input is not None:
+            # Predict flow from he_h (source) to edge_input (target ihc_h or he_h)
+            flow_field = self.alignment_net(he_h, edge_input) # [B, 2, H, W]
+            
+            # Warp main encoder features
+            if e0 is not None:
+                e0 = warp_features(e0, flow_field)
+            e1 = warp_features(e1, flow_field)
+            e2 = warp_features(e2, flow_field)
+            e3 = warp_features(e3, flow_field)
+            e4 = warp_features(e4, flow_field)
+            e5 = warp_features(e5, flow_field)
+            
+            # Warp input images for skip connection
+            if self.input_skip:
+                he_images = warp_features(he_images, flow_field)
+            
+            # Warp UNI semantic features
+            # uni_maps is a dict {32: [B, ch, 32, 32], 64: [B, ch, 64, 64], ...}
+            for k in uni_maps.keys():
+                uni_maps[k] = warp_features(uni_maps[k], flow_field)
 
         # Bottleneck at 16×16
         x = self.bottleneck(e5)     # [B, 512, 16, 16]

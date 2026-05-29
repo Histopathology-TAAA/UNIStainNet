@@ -106,6 +106,8 @@ class UNIStainNetTrainer(pl.LightningModule):
         label_names=None,
         # Case A/B H-channel training switch
         case_a_prob=0.0,
+        # Spatial Alignment Network (STN)
+        use_alignment=False,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -128,6 +130,7 @@ class UNIStainNetTrainer(pl.LightningModule):
             uni_spatial_size=uni_spatial_size,
             image_size=image_size,
             uni_spade_at_512=uni_spade_at_512,
+            use_alignment=use_alignment,
         )
 
         # Discriminator (global multi-scale)
@@ -614,7 +617,7 @@ class UNIStainNetTrainer(pl.LightningModule):
         # ----------------------------------------------------------------
         # Generator step
         # ----------------------------------------------------------------
-        generated = self.generator(he, uni_dropped, labels_dropped, edge_input=edge_input)
+        generated = self.generator(he, uni_dropped, labels_dropped, edge_input=edge_input, he_h=he_h)
 
         # ---- LPIPS losses ----
         # Case A: full-resolution LPIPS (IHC H-channel drives structure, so pixel
@@ -798,7 +801,7 @@ class UNIStainNetTrainer(pl.LightningModule):
         loss_uncond_d = torch.tensor(0.0, device=self.device)
         if self.global_step >= self.hparams.adversarial_start_step and any_adv:
             with torch.no_grad():
-                fake_detached = self.generator(he, uni_dropped, labels_dropped, edge_input=edge_input)
+                fake_detached = self.generator(he, uni_dropped, labels_dropped, edge_input=edge_input, he_h=he_h)
 
             # For 1024, downsample for disc
             if img_sz == 1024:
@@ -938,7 +941,7 @@ class UNIStainNetTrainer(pl.LightningModule):
 
         # Use EMA generator
         with torch.no_grad():
-            generated = self.generator_ema(he, uni, labels, edge_input=edge_input)
+            generated = self.generator_ema(he, uni, labels, edge_input=edge_input, he_h=he_h)
 
         # LPIPS (4x downsample: 128 for 512, 256 for 1024)
         lpips_size = self.hparams.image_size // 4
