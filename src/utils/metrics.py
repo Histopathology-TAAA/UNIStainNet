@@ -102,12 +102,13 @@ def compute_image_quality_metrics(generated, real):
     results['psnr_std'] = float(np.std(psnr_vals))
 
     # LPIPS (full resolution)
-    lpips_metric = LearnedPerceptualImagePatchSimilarity(net_type='alex')
+    lpips_metric = LearnedPerceptualImagePatchSimilarity(net_type='alex').cuda()
     lpips_vals = []
     for i in range(0, N, 8):
-        batch_gen = generated[i:i+8].float().clamp(-1, 1)
-        batch_real = real[i:i+8].float().clamp(-1, 1)
-        val = lpips_metric(batch_gen, batch_real).item()
+        batch_gen = generated[i:i+8].float().clamp(-1, 1).cuda()
+        batch_real = real[i:i+8].float().clamp(-1, 1).cuda()
+        with torch.no_grad():
+            val = lpips_metric(batch_gen, batch_real).item()
         if not np.isnan(val):
             lpips_vals.append(val)
     results['lpips_mean'] = float(np.mean(lpips_vals)) if lpips_vals else float('nan')
@@ -115,34 +116,49 @@ def compute_image_quality_metrics(generated, real):
     # LPIPS downsampled (128x128)
     lpips_ds_vals = []
     for i in range(0, N, 8):
-        batch_gen = F.interpolate(generated[i:i+8].float().clamp(-1, 1), size=128, mode='bilinear', align_corners=False)
-        batch_real = F.interpolate(real[i:i+8].float().clamp(-1, 1), size=128, mode='bilinear', align_corners=False)
-        val = lpips_metric(batch_gen, batch_real).item()
+        batch_gen = F.interpolate(generated[i:i+8].float().clamp(-1, 1).cuda(), size=128, mode='bilinear', align_corners=False)
+        batch_real = F.interpolate(real[i:i+8].float().clamp(-1, 1).cuda(), size=128, mode='bilinear', align_corners=False)
+        with torch.no_grad():
+            val = lpips_metric(batch_gen, batch_real).item()
         if not np.isnan(val):
             lpips_ds_vals.append(val)
     results['lpips_128_mean'] = float(np.mean(lpips_ds_vals)) if lpips_ds_vals else float('nan')
 
+    del lpips_metric
+    torch.cuda.empty_cache()
+
     # FID (Inception)
-    fid = FrechetInceptionDistance(feature=2048, normalize=True)
+    fid = FrechetInceptionDistance(feature=2048, normalize=True).cuda()
     for i in range(0, N, 16):
-        batch_gen_01 = ((generated[i:i+16].float() + 1) / 2).clamp(0, 1)
-        batch_real_01 = ((real[i:i+16].float() + 1) / 2).clamp(0, 1)
-        fid.update(batch_real_01, real=True)
-        fid.update(batch_gen_01, real=False)
+        batch_gen_01 = ((generated[i:i+16].float() + 1) / 2).clamp(0, 1).cuda()
+        batch_real_01 = ((real[i:i+16].float() + 1) / 2).clamp(0, 1).cuda()
+        with torch.no_grad():
+            fid.update(batch_real_01, real=True)
+            fid.update(batch_gen_01, real=False)
     results['fid_inception'] = float(fid.compute().item())
+    
+    del fid
+    torch.cuda.empty_cache()
 
     # KID (Kernel Inception Distance)
-    kid = KernelInceptionDistance(feature=2048, normalize=True, subset_size=min(N, 100))
+    kid = KernelInceptionDistance(feature=2048, normalize=True, subset_size=min(N, 100)).cuda()
     for i in range(0, N, 16):
-        batch_gen_01 = ((generated[i:i+16].float() + 1) / 2).clamp(0, 1)
-        batch_real_01 = ((real[i:i+16].float() + 1) / 2).clamp(0, 1)
-        kid.update(batch_real_01, real=True)
-        kid.update(batch_gen_01, real=False)
+        batch_gen_01 = ((generated[i:i+16].float() + 1) / 2).clamp(0, 1).cuda()
+        batch_real_01 = ((real[i:i+16].float() + 1) / 2).clamp(0, 1).cuda()
+        with torch.no_grad():
+            kid.update(batch_real_01, real=True)
+            kid.update(batch_gen_01, real=False)
     kid_mean, kid_std = kid.compute()
     results['kid_mean'] = float(kid_mean.item())
     results['kid_std'] = float(kid_std.item())
     results['kid_mean_x1000'] = float(kid_mean.item() * 1000)
     results['kid_std_x1000'] = float(kid_std.item() * 1000)
+
+    del kid
+    torch.cuda.empty_cache()
+    
+    import gc
+    gc.collect()
 
     return results
 

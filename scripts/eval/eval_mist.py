@@ -263,6 +263,7 @@ def main():
 
         # Explicitly free memory before next stain
         del gen, real, he, fnames
+        del dm, test_loader
         import gc
         gc.collect()
 
