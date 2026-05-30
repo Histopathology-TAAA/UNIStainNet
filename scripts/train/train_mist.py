@@ -43,12 +43,17 @@ def main():
                              'Default: 0.0 (pure Case B, original behaviour)')
     parser.add_argument('--use_alignment', action='store_true',
                         help='Enable Spatial Alignment Network (STN) for fixing misalignment in Case A.')
+    parser.add_argument('--edge_encoder', type=str, default='v2', choices=['v1', 'v2', 'none'],
+                        help="Edge encoder type: 'v1', 'v2', or 'none'. Default: 'v2'")
     args = parser.parse_args()
 
     print("=" * 70)
     print(f"TRAINING: Unified Multi-Stain UNIStainNet")
     print(f"  Stains: {args.stains}")
     print("=" * 70)
+
+    # Convert 'none' to Python None/False
+    edge_enc = None if args.edge_encoder == 'none' else args.edge_encoder
 
     # Paper hyperparameters
     model = UNIStainNetTrainer(
@@ -59,7 +64,7 @@ def main():
         uni_dim=1024,
         ndf=64,
         input_skip=True,
-        edge_encoder='v2',
+        edge_encoder=edge_enc,
         edge_base_ch=32,
         uni_spatial_size=32,    # 32x32 patch tokens from UNI
         label_names=['HER2', 'Ki67', 'ER', 'PR'],

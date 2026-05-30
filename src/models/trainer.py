@@ -22,6 +22,7 @@ import lpips
 import pytorch_lightning as pl
 import torchvision
 import wandb
+from torchmetrics.image.fid import FrechetInceptionDistance
 
 from src.models.discriminator import (
     PatchDiscriminator, MultiScaleDiscriminator,
@@ -176,6 +177,9 @@ class UNIStainNetTrainer(pl.LightningModule):
         self.lpips_fn = lpips.LPIPS(net='alex')
         self.lpips_fn.requires_grad_(False)
         self.lpips_fn.eval()
+
+        self.val_fid = FrechetInceptionDistance(feature=2048, normalize=True)
+        self.val_fid.requires_grad_(False)
 
         self.dab_extractor = DABExtractor(device='cpu')
 
@@ -974,6 +978,10 @@ class UNIStainNetTrainer(pl.LightningModule):
         self.log('val/ssim', ssim_val, prog_bar=True, sync_dist=True)
         self.log('val/dab_mae', dab_mae, prog_bar=True, sync_dist=True)
 
+        # Update validation FID
+        self.val_fid.update(her2_01, real=True)
+        self.val_fid.update(gen_01, real=False)
+
         # Collect per-label samples for visual grids (multi-stain only)
         if hasattr(self, '_val_per_label_samples'):
             for i in range(len(labels)):
@@ -996,6 +1004,14 @@ class UNIStainNetTrainer(pl.LightningModule):
 
     def on_validation_epoch_end(self):
         """Log per-label sample grids if multiple labels are present."""
+        # Compute and log validation FID
+        try:
+            fid_val = self.val_fid.compute()
+            self.log('val/fid', fid_val, prog_bar=True, sync_dist=True)
+        except Exception as e:
+            print(f"Failed to calculate validation FID: {e}")
+        self.val_fid.reset()
+
         if not hasattr(self, '_val_per_label_samples') or len(self._val_per_label_samples) <= 1:
             return
 
