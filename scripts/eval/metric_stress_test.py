@@ -55,9 +55,12 @@ def load_models(device):
 
     print("Loading Foundation Model for Path-FID...")
     try:
-        # Attempt to load CONCH as requested
-        fm_model = timm.create_model("hf-hub:MahmoodLab/conch", pretrained=True, num_classes=0)
+        from conch.open_clip_custom import create_model_from_pretrained
+        print("Attempting to load CONCH via open_clip_custom...")
+        # It will automatically use your huggingface-cli token
+        fm_model, _ = create_model_from_pretrained('conch_ViT-B-16', "hf_hub:MahmoodLab/conch")
         print("Successfully loaded CONCH.")
+
     except Exception as e:
         print(f"Warning: Failed to load CONCH. Error: {e}")
         print("Falling back to UNI model (MahmoodLab/uni)...")
@@ -92,7 +95,11 @@ def extract_path_features(model, img_t):
     img_norm = (img_resized - mean) / std
     
     with torch.no_grad():
-        if hasattr(model, 'forward_features'):
+        if hasattr(model, 'encode_image'):
+            # CONCH / OpenCLIP models
+            feat = model.encode_image(img_norm)
+        elif hasattr(model, 'forward_features'):
+            # UNI / standard timm ViT models
             feat = model.forward_features(img_norm)
             # If the model returns unpooled sequence (e.g. [1, 197, 1024]), grab CLS token
             if feat.ndim == 3:
