@@ -83,6 +83,7 @@ class UNIStainNetTrainer(pl.LightningModule):
         patchnce_layers=(2, 3, 4),
         patchnce_n_patches=256,
         patchnce_temperature=0.07,
+        uni_perceptual_weight=0.0,
         # Ablation
         disable_uni=False,
         disable_class=False,
@@ -703,6 +704,32 @@ class UNIStainNetTrainer(pl.LightningModule):
             loss_gram = self.compute_gram_style_loss(generated, her2)
             loss_g = loss_g + self.hparams.gram_style_weight * loss_gram
             self.log('train/gram_style', loss_gram, prog_bar=False)
+
+        # UNI Perceptual Feature Loss (Case A strictly aligned only)
+        if self.hparams.uni_perceptual_weight > 0 and use_case_a:
+            with torch.amp.autocast('cuda', enabled=False):
+                uni_model = self._load_uni_model()
+                # Normalize to ImageNet stats
+                mean = torch.tensor([0.485, 0.456, 0.406], device=self.device).view(1, 3, 1, 1)
+                std = torch.tensor([0.229, 0.224, 0.225], device=self.device).view(1, 3, 1, 1)
+                gen_01 = (generated.float() + 1) / 2
+                her2_01 = (her2.float() + 1) / 2
+                gen_norm = (gen_01 - mean) / std
+                her2_norm = (her2_01 - mean) / std
+                
+                # Resize to UNI expected size
+                gen_224 = F.interpolate(gen_norm, size=(224, 224), mode='bilinear', align_corners=False)
+                her2_224 = F.interpolate(her2_norm, size=(224, 224), mode='bilinear', align_corners=False)
+                
+                with torch.no_grad():
+                    feat_real = uni_model.forward_features(her2_224)
+                feat_gen = uni_model.forward_features(gen_224)
+                
+                # Dense L1 loss over all spatial tokens
+                loss_uni_perceptual = F.l1_loss(feat_gen, feat_real.detach())
+                
+            loss_g = loss_g + self.hparams.uni_perceptual_weight * loss_uni_perceptual
+            self.log('train/uni_perceptual', loss_uni_perceptual, prog_bar=False)
 
         # H&E / IHC H-channel edge loss (Case A or Case B)
         # Both cases use the same multi-scale Sobel loss (compute_he_edge_loss).

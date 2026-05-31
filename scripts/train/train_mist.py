@@ -45,6 +45,8 @@ def main():
                         help='Enable Spatial Alignment Network (STN) for fixing misalignment in Case A.')
     parser.add_argument('--edge_encoder', type=str, default='v2', choices=['v1', 'v2', 'none'],
                         help="Edge encoder type: 'v1', 'v2', or 'none'. Default: 'v2'")
+    parser.add_argument('--uni_perceptual_weight', type=float, default=0.0,
+                        help='Weight for the UNI perceptual feature loss (only active when Case A is running). Default: 0.0')
     args = parser.parse_args()
 
     print("=" * 70)
@@ -89,6 +91,7 @@ def main():
         feat_match_weight=10.0,
         patchnce_weight=0.0,
         bg_white_weight=0.0,
+        uni_perceptual_weight=args.uni_perceptual_weight,
         # GAN training
         r1_weight=10.0,
         r1_every=16,
