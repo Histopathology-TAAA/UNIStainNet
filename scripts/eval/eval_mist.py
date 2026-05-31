@@ -53,28 +53,14 @@ def load_uni_model():
     return model
 
 
-def extract_features_for_crop(uni_model, he_crop_01, spatial_pool_size=32):
-    """Extract UNI features from a 512x512 H&E crop."""
-    uni_transform = transforms.Compose([
-        transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                             std=[0.229, 0.224, 0.225]),
-    ])
-
-    B = he_crop_01.shape[0]
+def extract_features_from_sub_crops(uni_model, uni_sub_crops, spatial_pool_size=32):
+    """Extract UNI features directly from dataloader sub-crops."""
+    B = uni_sub_crops.shape[0]
     num_crops = 4
     patches_per_side = 14
 
-    sub_crops = []
-    crop_h = he_crop_01.shape[2] // num_crops
-    crop_w = he_crop_01.shape[3] // num_crops
-    for i in range(num_crops):
-        for j in range(num_crops):
-            sub = he_crop_01[:, :, i*crop_h:(i+1)*crop_h, j*crop_w:(j+1)*crop_w]
-            sub = F.interpolate(sub, size=(224, 224), mode='bicubic', align_corners=False)
-            sub = torch.stack([uni_transform(s) for s in sub])
-            sub_crops.append(sub)
-
-    all_crops = torch.stack(sub_crops, dim=1).reshape(B * 16, 3, 224, 224).cuda()
+    # uni_sub_crops is [B, 16, 3, 224, 224]
+    all_crops = uni_sub_crops.reshape(B * 16, 3, 224, 224).cuda()
 
     with torch.no_grad():
         all_feats = uni_model.forward_features(all_crops)
@@ -99,7 +85,7 @@ def extract_features_for_crop(uni_model, he_crop_01, spatial_pool_size=32):
 
 @torch.no_grad()
 def generate_for_stain(model, uni_model, dataloader, stain_label, guidance_scale=1.0, seed=42,
-                       spatial_pool_size=32):
+                       spatial_pool_size=32, no_downcasting=False):
     """Generate IHC images for a specific stain."""
     all_gen, all_real, all_he, all_fnames = [], [], [], []
 
@@ -112,9 +98,8 @@ def generate_for_stain(model, uni_model, dataloader, stain_label, guidance_scale
         stain_labels = torch.full((he.size(0),), stain_label, device='cuda', dtype=torch.long)
 
         # Extract UNI features
-        he_01 = ((he + 1) / 2).clamp(0, 1)
-        uni = extract_features_for_crop(uni_model, he_01,
-                                        spatial_pool_size=spatial_pool_size).cuda()
+        uni = extract_features_from_sub_crops(uni_model, uni_sub_crops,
+                                              spatial_pool_size=spatial_pool_size).cuda()
 
         gen = model.generate(he, uni, stain_labels,
                              guidance_scale=guidance_scale,
@@ -122,9 +107,14 @@ def generate_for_stain(model, uni_model, dataloader, stain_label, guidance_scale
                              edge_input=he_h,
                              he_h=he_h)
 
-        all_gen.append(gen.cpu().to(torch.float16))
-        all_real.append(her2.cpu().to(torch.float16))
-        all_he.append(he.cpu().to(torch.float16))
+        if no_downcasting:
+            all_gen.append(gen.cpu())
+            all_real.append(her2.cpu())
+            all_he.append(he.cpu())
+        else:
+            all_gen.append(gen.cpu().to(torch.float16))
+            all_real.append(her2.cpu().to(torch.float16))
+            all_he.append(he.cpu().to(torch.float16))
         all_fnames.extend(fnames)
 
     return torch.cat(all_gen), torch.cat(all_real), torch.cat(all_he), all_fnames
@@ -142,6 +132,7 @@ def main():
     parser.add_argument('--batch_size', type=int, default=8)
     parser.add_argument('--skip_uni_fid', action='store_true')
     parser.add_argument('--composite_bg', action='store_true')
+    parser.add_argument('--no_downcasting', action='store_true', help='Disable float16 downcasting for metric accuracy')
     args = parser.parse_args()
 
     if args.output_dir is None:
@@ -203,7 +194,8 @@ def main():
         gen, real, he, fnames = generate_for_stain(
             model, uni_model, test_loader, stain_label,
             guidance_scale=args.guidance_scale,
-            spatial_pool_size=spatial_pool_size)
+            spatial_pool_size=spatial_pool_size,
+            no_downcasting=args.no_downcasting)
         print(f"Generated {len(gen)} images")
 
         if args.composite_bg:

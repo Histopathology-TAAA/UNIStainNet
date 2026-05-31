@@ -51,45 +51,18 @@ def load_uni_model():
     return model
 
 
-def extract_features_for_crop(uni_model, he_crop_01, spatial_pool_size=32):
-    """Extract UNI features from a 512x512 H&E crop.
-
-    Splits into 4x4 sub-crops, runs UNI on each, reassembles spatial grid.
-
-    Args:
-        uni_model: UNI ViT-L/16 model on CUDA
-        he_crop_01: [B, 3, 512, 512] in [0, 1]
-        spatial_pool_size: target spatial grid size (32 = 32x32 = 1024 tokens)
-
-    Returns:
-        uni_features: [B, S*S, 1024]
-    """
-    uni_transform = transforms.Compose([
-        transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                             std=[0.229, 0.224, 0.225]),
-    ])
-
-    B = he_crop_01.shape[0]
+def extract_features_from_sub_crops(uni_model, uni_sub_crops, spatial_pool_size=32):
+    """Extract UNI features directly from dataloader sub-crops."""
+    B = uni_sub_crops.shape[0]
     num_crops = 4
-    patches_per_side = 14  # 224/16
+    patches_per_side = 14
 
-    # Split into 4x4 sub-crops and resize to 224x224
-    sub_crops = []
-    crop_h = he_crop_01.shape[2] // num_crops
-    crop_w = he_crop_01.shape[3] // num_crops
-    for i in range(num_crops):
-        for j in range(num_crops):
-            sub = he_crop_01[:, :, i*crop_h:(i+1)*crop_h, j*crop_w:(j+1)*crop_w]
-            sub = F.interpolate(sub, size=(224, 224), mode='bicubic', align_corners=False)
-            sub = torch.stack([uni_transform(s) for s in sub])
-            sub_crops.append(sub)
-
-    # [B, 16, 3, 224, 224] -> [B*16, 3, 224, 224]
-    all_crops = torch.stack(sub_crops, dim=1).reshape(B * 16, 3, 224, 224).cuda()
+    # uni_sub_crops is [B, 16, 3, 224, 224]
+    all_crops = uni_sub_crops.reshape(B * 16, 3, 224, 224).cuda()
 
     with torch.no_grad():
         all_feats = uni_model.forward_features(all_crops)
-        patch_tokens = all_feats[:, 1:, :]  # [B*16, 196, 1024]
+        patch_tokens = all_feats[:, 1:, :]
 
     # Reassemble spatial grid
     patch_tokens = patch_tokens.reshape(
@@ -121,9 +94,8 @@ def generate_all(model, uni_model, dataloader, guidance_scale=1.0, seed=42,
         labels = labels.cuda().long()
 
         # Extract UNI features on-the-fly
-        he_01 = ((he + 1) / 2).clamp(0, 1)
-        uni = extract_features_for_crop(uni_model, he_01,
-                                        spatial_pool_size=spatial_pool_size).cuda()
+        uni = extract_features_from_sub_crops(uni_model, uni_sub_crops,
+                                              spatial_pool_size=spatial_pool_size).cuda()
 
         gen = model.generate(he, uni, labels,
                              guidance_scale=guidance_scale,
