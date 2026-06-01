@@ -110,6 +110,7 @@ class UNIStainNetTrainer(pl.LightningModule):
         case_a_prob=0.0,
         # Spatial Alignment Network (STN)
         use_alignment=False,
+        learnable_sobel=False,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -133,6 +134,7 @@ class UNIStainNetTrainer(pl.LightningModule):
             image_size=image_size,
             uni_spade_at_512=uni_spade_at_512,
             use_alignment=use_alignment,
+            learnable_sobel=learnable_sobel,
         )
 
         # Discriminator (global multi-scale)

@@ -21,14 +21,19 @@ class EdgeEncoder(nn.Module):
     No architecture weight change vs the original: enc1 still takes 2-ch Sobel output.
     """
 
-    def __init__(self, base_ch=32):
+    def __init__(self, base_ch=32, learnable_sobel=False):
         super().__init__()
-        # Sobel kernels (fixed, not learned)
+        # Sobel kernels
         sobel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]],
                                dtype=torch.float32).view(1, 1, 3, 3)
         sobel_y = sobel_x.transpose(-1, -2)
-        self.register_buffer('sobel_x', sobel_x)
-        self.register_buffer('sobel_y', sobel_y)
+        
+        if learnable_sobel:
+            self.sobel_x = nn.Parameter(sobel_x)
+            self.sobel_y = nn.Parameter(sobel_y)
+        else:
+            self.register_buffer('sobel_x', sobel_x)
+            self.register_buffer('sobel_y', sobel_y)
 
         # Edge feature encoder: 2ch (grad_x, grad_y) → multi-scale features
         self.enc1 = nn.Sequential(  # 512→256, out: base_ch
@@ -89,14 +94,19 @@ class MultiScaleEdgeEncoder(nn.Module):
     Provides features at 512 for fine structure at output resolution.
     """
 
-    def __init__(self, base_ch=32):
+    def __init__(self, base_ch=32, learnable_sobel=False):
         super().__init__()
-        # Fixed Sobel kernels for structural prior
+        # Sobel kernels for structural prior
         sobel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]],
                                dtype=torch.float32).view(1, 1, 3, 3)
         sobel_y = sobel_x.transpose(-1, -2)
-        self.register_buffer('sobel_x', sobel_x)
-        self.register_buffer('sobel_y', sobel_y)
+        
+        if learnable_sobel:
+            self.sobel_x = nn.Parameter(sobel_x)
+            self.sobel_y = nn.Parameter(sobel_y)
+        else:
+            self.register_buffer('sobel_x', sobel_x)
+            self.register_buffer('sobel_y', sobel_y)
 
         # Per-scale feature extractors
         # Input: 1-ch H-channel + 2-ch Sobel = 3-ch at each scale

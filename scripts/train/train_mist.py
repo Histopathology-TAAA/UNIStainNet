@@ -47,6 +47,8 @@ def main():
                         help="Edge encoder type: 'v1', 'v2', or 'none'. Default: 'v2'")
     parser.add_argument('--uni_perceptual_weight', type=float, default=0.0,
                         help='Weight for the UNI perceptual feature loss (only active when Case A is running). Default: 0.0')
+    parser.add_argument('--learnable_sobel', action='store_true',
+                        help='Enable making the Sobel kernels in edge encoder learnable parameters.')
     args = parser.parse_args()
 
     print("=" * 70)
@@ -109,6 +111,7 @@ def main():
         case_a_prob=args.case_a_prob,
         # Spatial Alignment Network (STN)
         use_alignment=args.use_alignment,
+        learnable_sobel=args.learnable_sobel,
     )
 
     dm = MISTMultiStainCropDataModule(

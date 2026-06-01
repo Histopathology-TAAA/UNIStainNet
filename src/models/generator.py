@@ -95,7 +95,7 @@ class SPADEUNetGenerator(nn.Module):
     def __init__(self, num_classes=5, class_dim=64, uni_dim=1024,
                  input_skip=False, edge_encoder=False, edge_base_ch=32,
                  uni_spatial_size=4, image_size=512, uni_spade_at_512=False,
-                 use_alignment=False):
+                 use_alignment=False, learnable_sobel=False):
         super().__init__()
         self.num_classes = num_classes
         self.class_dim = class_dim
@@ -127,11 +127,11 @@ class SPADEUNetGenerator(nn.Module):
         # For 1024 input, H&E is downsampled to 512 before edge extraction.
         self.edge_encoder_type = edge_encoder  # False, 'v1', or 'v2'
         if edge_encoder == 'v2':
-            self.edge_encoder = MultiScaleEdgeEncoder(base_ch=edge_base_ch)
+            self.edge_encoder = MultiScaleEdgeEncoder(base_ch=edge_base_ch, learnable_sobel=learnable_sobel)
             edge_ch = {512: edge_base_ch, 256: edge_base_ch, 128: edge_base_ch * 2,
                        64: edge_base_ch * 4, 32: edge_base_ch * 4}
         elif edge_encoder:  # True or 'v1'
-            self.edge_encoder = EdgeEncoder(base_ch=edge_base_ch)
+            self.edge_encoder = EdgeEncoder(base_ch=edge_base_ch, learnable_sobel=learnable_sobel)
             edge_ch = {512: 0, 256: edge_base_ch, 128: edge_base_ch * 2,
                        64: edge_base_ch * 4, 32: edge_base_ch * 4}
         else:
