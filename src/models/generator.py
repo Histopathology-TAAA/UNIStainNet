@@ -12,15 +12,16 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-def warp_features(x, flow):
-    """Warps feature map x using the normalized displacement flow.
+def warp_features(x, flow, mask=None):
+    """Warps feature map x using the normalized displacement flow and applies a confidence mask.
     
     Args:
         x: [B, C, H, W] features
         flow: [B, 2, H_orig, W_orig] displacement field at any resolution
               (values in normalized [-1, 1] range relative to image size)
+        mask: [B, 1, H_orig, W_orig] optional confidence mask (0 to 1)
     Returns:
-        warped_x: [B, C, H, W] features shifted by the flow field.
+        warped_x: [B, C, H, W] features shifted by the flow field and optionally masked.
     """
     B, C, H, W = x.shape
     
@@ -42,7 +43,16 @@ def warp_features(x, flow):
     # flow_down is [B, 2, H, W]. Permute to [B, H, W, 2] and add
     warped_grid = base_grid + flow_down.permute(0, 2, 3, 1)
     
-    return F.grid_sample(x, warped_grid, mode='bilinear', padding_mode='reflection', align_corners=True)
+    warped_x = F.grid_sample(x, warped_grid, mode='bilinear', padding_mode='reflection', align_corners=True)
+    
+    if mask is not None:
+        if mask.shape[-1] != W or mask.shape[-2] != H:
+            mask_down = F.interpolate(mask, size=(H, W), mode='bilinear', align_corners=False)
+        else:
+            mask_down = mask
+        warped_x = warped_x * mask_down
+        
+    return warped_x
 
 
 class AlignmentNetwork(nn.Module):
@@ -64,18 +74,24 @@ class AlignmentNetwork(nn.Module):
             nn.LeakyReLU(0.2, inplace=True),
             nn.ConvTranspose2d(64, 32, 4, stride=2, padding=1), # upsample
             nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(32, 2, 3, padding=1) # 2 channels for x,y flow
+            nn.Conv2d(32, 3, 3, padding=1) # 3 channels: x flow, y flow, confidence mask
         )
-        # Zero-initialize the final convolution for identity transform
+        # Zero-initialize the final convolution weights
         nn.init.zeros_(self.net[-1].weight)
         if self.net[-1].bias is not None:
             nn.init.zeros_(self.net[-1].bias)
+            # Initialize the confidence mask bias so it starts near 1.0 (sigmoid(3) = 0.95)
+            self.net[-1].bias.data[2] = 3.0
 
     def forward(self, src_h, tgt_h):
         # Scale input H-channels to [0, 1] for better flow processing
         src = (src_h + 1) / 2
         tgt = (tgt_h + 1) / 2
-        return self.net(torch.cat([src, tgt], dim=1))
+        out = self.net(torch.cat([src, tgt], dim=1))
+        
+        flow = out[:, :2, :, :]
+        mask = torch.sigmoid(out[:, 2:, :, :])
+        return flow, mask
 
 from src.models.blocks import SPADEBlock, ResBlock, SelfAttention
 from src.models.edge_encoder import EdgeEncoder, MultiScaleEdgeEncoder
@@ -318,25 +334,25 @@ class SPADEUNetGenerator(nn.Module):
         # Alignment Network (STN) Feature Warping
         if self.use_alignment and he_h is not None and edge_input is not None:
             # Predict flow from he_h (source) to edge_input (target ihc_h or he_h)
-            flow_field = self.alignment_net(he_h, edge_input) # [B, 2, H, W]
+            flow_field, confidence_mask = self.alignment_net(he_h, edge_input)
             
             # Warp main encoder features
             if e0 is not None:
-                e0 = warp_features(e0, flow_field)
-            e1 = warp_features(e1, flow_field)
-            e2 = warp_features(e2, flow_field)
-            e3 = warp_features(e3, flow_field)
-            e4 = warp_features(e4, flow_field)
-            e5 = warp_features(e5, flow_field)
+                e0 = warp_features(e0, flow_field, confidence_mask)
+            e1 = warp_features(e1, flow_field, confidence_mask)
+            e2 = warp_features(e2, flow_field, confidence_mask)
+            e3 = warp_features(e3, flow_field, confidence_mask)
+            e4 = warp_features(e4, flow_field, confidence_mask)
+            e5 = warp_features(e5, flow_field, confidence_mask)
             
             # Warp input images for skip connection
             if self.input_skip:
-                he_images = warp_features(he_images, flow_field)
+                he_images = warp_features(he_images, flow_field, confidence_mask)
             
             # Warp UNI semantic features
             # uni_maps is a dict {32: [B, ch, 32, 32], 64: [B, ch, 64, 64], ...}
             for k in uni_maps.keys():
-                uni_maps[k] = warp_features(uni_maps[k], flow_field)
+                uni_maps[k] = warp_features(uni_maps[k], flow_field, confidence_mask)
 
         # Bottleneck at 16×16
         x = self.bottleneck(e5)     # [B, 512, 16, 16]
