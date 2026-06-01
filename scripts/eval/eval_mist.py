@@ -151,6 +151,15 @@ def main():
     model = UNIStainNetTrainer.load_from_checkpoint(args.checkpoint, strict=False)
     model = model.cuda().eval()
 
+    # Force bypass of the Alignment Network (STN) during evaluation.
+    # Since we have no target IHC to align to during inference, bypassing the STN 
+    # entirely guarantees 100% structural fidelity to the input H&E and prevents 
+    # interpolation blur from degrading the SSIM/NMI metrics.
+    if hasattr(model.generator, 'use_alignment'):
+        model.generator.use_alignment = False
+    if hasattr(model, 'generator_ema') and hasattr(model.generator_ema, 'use_alignment'):
+        model.generator_ema.use_alignment = False
+
     # Read spatial size from checkpoint hparams (default 32 for backward compat)
     spatial_pool_size = getattr(model.hparams, 'uni_spatial_size', 32)
     print(f"UNI spatial size: {spatial_pool_size}x{spatial_pool_size}")
