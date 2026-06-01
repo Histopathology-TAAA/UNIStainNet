@@ -722,15 +722,6 @@ class UNIStainNetTrainer(pl.LightningModule):
             loss_g = loss_g + self.hparams.dab_sharpness_weight * loss_dab_sharp
             self.log('train/dab_sharpness', loss_dab_sharp, prog_bar=False)
 
-        # Differentiable H-SSIM Loss (Color Deconvolution on RGB -> SSIM on H-channels)
-        if self.hparams.he_h_ssim_weight > 0:
-            # We strictly compare the synthesized IHC vs the real IHC
-            loss_he_h_ssim = self.compute_he_h_ssim_loss(generated, her2)
-            loss_g = loss_g + self.hparams.he_h_ssim_weight * loss_he_h_ssim
-            if use_case_a:
-                self.log('train/he_h_ssim_caseA', loss_he_h_ssim, prog_bar=False)
-            else:
-                self.log('train/he_h_ssim_caseB', loss_he_h_ssim, prog_bar=False)
 
         # Gram-matrix style loss
         if self.hparams.gram_style_weight > 0 and self.vgg_extractor is not None:
