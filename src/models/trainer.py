@@ -245,11 +245,32 @@ class UNIStainNetTrainer(pl.LightningModule):
             del state_dict[k]
 
     def on_load_checkpoint(self, checkpoint):
-        """Filter out UNI model keys from old checkpoints that included them."""
+        """Filter out UNI model keys from old checkpoints that included them.
+        Also handle backward compatibility for AlignmentNetwork 2-channel -> 3-channel update.
+        """
         state_dict = checkpoint.get('state_dict', {})
         keys_to_remove = [k for k in state_dict if k.startswith('_uni_model.')]
         for k in keys_to_remove:
             del state_dict[k]
+            
+        # Backward compatibility for AlignmentNetwork
+        for prefix in ['generator.alignment_net.net.8.', 'generator_ema.alignment_net.net.8.']:
+            weight_key = prefix + 'weight'
+            bias_key = prefix + 'bias'
+            if weight_key in state_dict and state_dict[weight_key].shape[0] == 2:
+                # Pad weight from [2, 32, 3, 3] to [3, 32, 3, 3]
+                old_w = state_dict[weight_key]
+                new_w = torch.zeros((3, old_w.shape[1], old_w.shape[2], old_w.shape[3]), device=old_w.device, dtype=old_w.dtype)
+                new_w[:2] = old_w
+                state_dict[weight_key] = new_w
+                
+                # Pad bias from [2] to [3] and initialize the confidence mask dimension
+                if bias_key in state_dict:
+                    old_b = state_dict[bias_key]
+                    new_b = torch.zeros(3, device=old_b.device, dtype=old_b.dtype)
+                    new_b[:2] = old_b
+                    new_b[2] = 3.0  # Safe identity mask initialization (sigmoid(3) = 0.95)
+                    state_dict[bias_key] = new_b
 
     def _load_uni_model(self):
         """Lazily load UNI ViT-L/16 for on-the-fly feature extraction."""
