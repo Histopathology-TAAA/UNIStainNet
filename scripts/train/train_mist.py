@@ -47,6 +47,8 @@ def main():
                         help="Edge encoder type: 'v1', 'v2', or 'none'. Default: 'v2'")
     parser.add_argument('--uni_perceptual_weight', type=float, default=0.0,
                         help='Weight for the UNI perceptual feature loss (only active when Case A is running). Default: 0.0')
+    parser.add_argument('--kstain_perceptual_weight', type=float, default=0.0,
+                        help='Weight for the K-Stain VGG perceptual loss. Default: 0.0')
     parser.add_argument('--learnable_sobel', action='store_true',
                         help='Enable making the Sobel kernels in edge encoder learnable parameters.')
     args = parser.parse_args()
@@ -94,6 +96,7 @@ def main():
         patchnce_weight=0.0,
         bg_white_weight=0.0,
         uni_perceptual_weight=args.uni_perceptual_weight,
+        kstain_perceptual_weight=args.kstain_perceptual_weight,
         # GAN training
         r1_weight=10.0,
         r1_every=16,
@@ -136,7 +139,7 @@ def main():
     lr_monitor = LearningRateMonitor(logging_interval='step')
 
     wandb_logger = WandbLogger(
-        project='Destaining-unistainnet-v3',
+        project='Destaining-v3-UNIStainNet-KStain',
         name=args.wandb_name,
         save_dir='wandb',
     )

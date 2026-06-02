@@ -66,6 +66,36 @@ def gram_matrix(feat):
     return gram / (C * H * W)
 
 
+class KStainPerceptualLoss(nn.Module):
+    """K-Stain Perceptual Loss.
+    
+    Computes the L1 distance between high-level VGG feature maps of the 
+    generated and target images to enforce perceptual and contextual consistency.
+    """
+    def __init__(self):
+        super().__init__()
+        self.vgg_extractor = VGGFeatureExtractor()
+        self.vgg_extractor.eval()
+        self.vgg_extractor.requires_grad_(False)
+        
+    def forward(self, gen, tgt):
+        # Resize to standard perceptual scale if needed
+        B, C, H, W = gen.shape
+        if H != 256 or W != 256:
+            gen_scaled = F.interpolate(gen, size=256, mode='bilinear', align_corners=False)
+            tgt_scaled = F.interpolate(tgt, size=256, mode='bilinear', align_corners=False)
+        else:
+            gen_scaled, tgt_scaled = gen, tgt
+            
+        feat_gen = self.vgg_extractor(gen_scaled)
+        feat_tgt = self.vgg_extractor(tgt_scaled)
+        
+        loss = 0.0
+        for fg, ft in zip(feat_gen, feat_tgt):
+            loss = loss + F.l1_loss(fg, ft.detach())
+        return loss / len(feat_gen)
+
+
 class PatchNCELoss(nn.Module):
     """Patchwise Noise Contrastive Estimation loss.
 

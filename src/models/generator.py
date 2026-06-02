@@ -12,86 +12,105 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-def warp_features(x, flow, mask=None):
-    """Warps feature map x using the normalized displacement flow and applies a confidence mask.
+def warp_affine(x, affine_matrix):
+    """Warps feature map x using the batched 2x3 affine matrix.
     
     Args:
         x: [B, C, H, W] features
-        flow: [B, 2, H_orig, W_orig] displacement field at any resolution
-              (values in normalized [-1, 1] range relative to image size)
-        mask: [B, 1, H_orig, W_orig] optional confidence mask (0 to 1)
+        affine_matrix: [B, 2, 3] affine transformation matrix (target -> source mapping)
     Returns:
-        warped_x: [B, C, H, W] features shifted by the flow field and optionally masked.
+        warped_x: [B, C, H, W] features shifted by the affine transform.
     """
+    if affine_matrix is None:
+        return x
     B, C, H, W = x.shape
-    
-    # Downsample flow to match feature map resolution if needed
-    if flow.shape[-1] != W or flow.shape[-2] != H:
-        flow_down = F.interpolate(flow, size=(H, W), mode='bilinear', align_corners=False)
-    else:
-        flow_down = flow
-
-    # Create base grid [-1, 1] for this resolution
-    grid_y, grid_x = torch.meshgrid(
-        torch.linspace(-1, 1, H, device=x.device), 
-        torch.linspace(-1, 1, W, device=x.device), 
-        indexing='ij'
-    )
-    base_grid = torch.stack([grid_x, grid_y], dim=-1)  # [H, W, 2]
-    base_grid = base_grid.unsqueeze(0).expand(B, -1, -1, -1) # [B, H, W, 2]
-    
-    # flow_down is [B, 2, H, W]. Permute to [B, H, W, 2] and add
-    warped_grid = base_grid + flow_down.permute(0, 2, 3, 1)
-    
-    warped_x = F.grid_sample(x, warped_grid, mode='bilinear', padding_mode='reflection', align_corners=True)
-    
-    if mask is not None:
-        if mask.shape[-1] != W or mask.shape[-2] != H:
-            mask_down = F.interpolate(mask, size=(H, W), mode='bilinear', align_corners=False)
-        else:
-            mask_down = mask
-        warped_x = warped_x * mask_down
-        
+    grid = F.affine_grid(affine_matrix, [B, C, H, W], align_corners=False)
+    warped_x = F.grid_sample(x, grid, mode='bilinear', padding_mode='reflection', align_corners=False)
     return warped_x
 
 
-class AlignmentNetwork(nn.Module):
-    """Spatial Transformer Network to align features to a target structure.
-    
-    Predicts a dense optical-flow-like displacement field from a source
-    and target image. Final layer is zero-initialized so it starts as
-    an identity transformation (zero flow).
-    """
-    def __init__(self):
+class SpatialSoftmax(nn.Module):
+    def __init__(self, temperature=0.1):
         super().__init__()
-        # Input: concat(source_h, target_h) = 2 channels
-        self.net = nn.Sequential(
-            nn.Conv2d(2, 32, 7, padding=3),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(32, 64, 5, padding=2, stride=2), # downsample
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(64, 64, 3, padding=1),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.ConvTranspose2d(64, 32, 4, stride=2, padding=1), # upsample
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(32, 3, 3, padding=1) # 3 channels: x flow, y flow, confidence mask
-        )
-        # Zero-initialize the final convolution weights
-        nn.init.zeros_(self.net[-1].weight)
-        if self.net[-1].bias is not None:
-            nn.init.zeros_(self.net[-1].bias)
-            # Initialize the confidence mask bias so it starts near 1.0 (sigmoid(3) = 0.95)
-            self.net[-1].bias.data[2] = 3.0
+        self.temperature = temperature
 
+    def forward(self, x):
+        # x: [B, N, H, W]
+        B, N, H, W = x.shape
+        x_flat = x.view(B, N, H * W) / self.temperature
+        softmax_weights = F.softmax(x_flat, dim=-1) # [B, N, H*W]
+        
+        # Create coordinates [-1, 1]
+        grid_y, grid_x = torch.meshgrid(
+            torch.linspace(-1, 1, H, device=x.device), 
+            torch.linspace(-1, 1, W, device=x.device), 
+            indexing='ij'
+        )
+        grid_x = grid_x.reshape(1, 1, H * W)
+        grid_y = grid_y.reshape(1, 1, H * W)
+        
+        expected_x = (softmax_weights * grid_x).sum(dim=-1) # [B, N]
+        expected_y = (softmax_weights * grid_y).sum(dim=-1) # [B, N]
+        
+        keypoints = torch.stack([expected_x, expected_y], dim=-1) # [B, N, 2]
+        return keypoints, softmax_weights.view(B, N, H, W)
+
+
+class HierarchicalSpatialKeypointDetector(nn.Module):
+    """K-Stain HSKD: Detects keypoints and estimates an affine transform matrix.
+    
+    Predicts N keypoints from source and target images and computes a global
+    2x3 affine transformation matrix using differentiable least squares.
+    """
+    def __init__(self, num_keypoints=128):
+        super().__init__()
+        # Shared feature extractor for robust keypoint discovery
+        self.feature_extractor = nn.Sequential(
+            nn.Conv2d(1, 32, 7, padding=3, stride=2),
+            nn.InstanceNorm2d(32),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(32, 64, 5, padding=2, stride=2),
+            nn.InstanceNorm2d(64),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(64, 128, 3, padding=1, stride=2),
+            nn.InstanceNorm2d(128),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(128, num_keypoints, 3, padding=1),
+        )
+        self.spatial_softmax = SpatialSoftmax(temperature=0.1)
+        
     def forward(self, src_h, tgt_h):
-        # Scale input H-channels to [0, 1] for better flow processing
         src = (src_h + 1) / 2
         tgt = (tgt_h + 1) / 2
-        out = self.net(torch.cat([src, tgt], dim=1))
         
-        flow = out[:, :2, :, :]
-        mask = torch.sigmoid(out[:, 2:, :, :])
-        return flow, mask
+        feat_src = self.feature_extractor(src)
+        feat_tgt = self.feature_extractor(tgt)
+        
+        kp_src, heat_src = self.spatial_softmax(feat_src) # [B, N, 2]
+        kp_tgt, heat_tgt = self.spatial_softmax(feat_tgt) # [B, N, 2]
+        
+        B, N, _ = kp_src.shape
+        ones = torch.ones(B, N, 1, device=kp_src.device)
+        
+        # P_T * X = P_S (We need mapping from Target to Source for grid_sample)
+        P_T_homo = torch.cat([kp_tgt, ones], dim=-1) # [B, N, 3]
+        P_S_target = kp_src # [B, N, 2]
+        
+        # Ridge regression (Tikhonov) to prevent singular matrices
+        lam = 1e-4
+        I = torch.eye(3, device=kp_src.device).unsqueeze(0).expand(B, -1, -1)
+        
+        PtP = torch.bmm(P_T_homo.transpose(1, 2), P_T_homo) + lam * I
+        PtY = torch.bmm(P_T_homo.transpose(1, 2), P_S_target)
+        
+        try:
+            X = torch.linalg.solve(PtP, PtY) # [B, 3, 2]
+            affine_matrix = X.transpose(1, 2) # [B, 2, 3]
+        except Exception:
+            # Fallback to identity transform
+            affine_matrix = torch.eye(3, device=kp_src.device)[:2].unsqueeze(0).expand(B, -1, -1)
+            
+        return affine_matrix, kp_src, kp_tgt
 
 from src.models.blocks import SPADEBlock, ResBlock, SelfAttention
 from src.models.edge_encoder import EdgeEncoder, MultiScaleEdgeEncoder
@@ -257,7 +276,7 @@ class SPADEUNetGenerator(nn.Module):
             )
 
         if self.use_alignment:
-            self.alignment_net = AlignmentNetwork()
+            self.alignment_net = HierarchicalSpatialKeypointDetector()
 
     def encode(self, images):
         """Extract intermediate encoder features for PatchNCE loss.
@@ -324,35 +343,36 @@ class SPADEUNetGenerator(nn.Module):
             e0 = None
             enc1_input = he_images
 
-        # Encoder
+        # Alignment Network (HSKD) Affine Warping
+        affine_matrix = None
+        kp_src, kp_tgt = None, None
+        if self.use_alignment and he_h is not None and edge_input is not None:
+            # Predict affine matrix from he_h (source) to edge_input (target ihc_h or he_h)
+            affine_matrix, kp_src, kp_tgt = self.alignment_net(he_h, edge_input)
+            
+            # Warp input images directly before main encoder
+            he_images = warp_affine(he_images, affine_matrix)
+            if self.input_skip:
+                pass # Already warped he_images
+            
+            # Warp UNI semantic features
+            for k in uni_maps.keys():
+                uni_maps[k] = warp_affine(uni_maps[k], affine_matrix)
+            
+            # If we warp inputs before encoding, we need to re-encode to get aligned features!
+            # Let's adjust enc1_input if e0 was used.
+            if self.enc0 is not None:
+                e0 = self.enc0(he_images)
+                enc1_input = e0
+            else:
+                enc1_input = he_images
+                
+        # Encoder (process affine-aligned H&E)
         e1 = self.enc1(enc1_input)  # [B, 64, 256, 256]
         e2 = self.enc2(e1)          # [B, 128, 128, 128]
         e3 = self.enc3(e2)          # [B, 256, 64, 64]
         e4 = self.enc4(e3)          # [B, 512, 32, 32]
         e5 = self.enc5(e4)          # [B, 512, 16, 16]
-
-        # Alignment Network (STN) Feature Warping
-        if self.use_alignment and he_h is not None and edge_input is not None:
-            # Predict flow from he_h (source) to edge_input (target ihc_h or he_h)
-            flow_field, confidence_mask = self.alignment_net(he_h, edge_input)
-            
-            # Warp main encoder features
-            if e0 is not None:
-                e0 = warp_features(e0, flow_field, confidence_mask)
-            e1 = warp_features(e1, flow_field, confidence_mask)
-            e2 = warp_features(e2, flow_field, confidence_mask)
-            e3 = warp_features(e3, flow_field, confidence_mask)
-            e4 = warp_features(e4, flow_field, confidence_mask)
-            e5 = warp_features(e5, flow_field, confidence_mask)
-            
-            # Warp input images for skip connection
-            if self.input_skip:
-                he_images = warp_features(he_images, flow_field, confidence_mask)
-            
-            # Warp UNI semantic features
-            # uni_maps is a dict {32: [B, ch, 32, 32], 64: [B, ch, 64, 64], ...}
-            for k in uni_maps.keys():
-                uni_maps[k] = warp_features(uni_maps[k], flow_field, confidence_mask)
 
         # Bottleneck at 16×16
         x = self.bottleneck(e5)     # [B, 512, 16, 16]
@@ -416,4 +436,6 @@ class SPADEUNetGenerator(nn.Module):
             x = torch.cat(skip1, dim=1) if len(skip1) > 1 else x
             x = self.output(x)  # [B, 3, 512, 512]
 
+        if self.use_alignment:
+            return x, (affine_matrix, kp_src, kp_tgt)
         return x

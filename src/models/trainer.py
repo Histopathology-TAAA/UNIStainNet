@@ -28,8 +28,8 @@ from src.models.discriminator import (
     PatchDiscriminator, MultiScaleDiscriminator,
     hinge_loss_d, hinge_loss_g, r1_gradient_penalty, feature_matching_loss,
 )
-from src.models.generator import SPADEUNetGenerator
-from src.models.losses import VGGFeatureExtractor, gram_matrix, PatchNCELoss
+from src.models.generator import SPADEUNetGenerator, warp_affine
+from src.models.losses import VGGFeatureExtractor, gram_matrix, PatchNCELoss, KStainPerceptualLoss
 from src.utils.dab import DABExtractor
 
 
@@ -84,6 +84,7 @@ class UNIStainNetTrainer(pl.LightningModule):
         patchnce_n_patches=256,
         patchnce_temperature=0.07,
         uni_perceptual_weight=0.0,
+        kstain_perceptual_weight=0.0,
         # Ablation
         disable_uni=False,
         disable_class=False,
@@ -171,6 +172,11 @@ class UNIStainNetTrainer(pl.LightningModule):
             )
         else:
             self.patchnce_loss = None
+
+        if kstain_perceptual_weight > 0:
+            self.kstain_perc_loss = KStainPerceptualLoss()
+        else:
+            self.kstain_perc_loss = None
 
         # EMA generator
         self.generator_ema = copy.deepcopy(self.generator)
@@ -645,7 +651,12 @@ class UNIStainNetTrainer(pl.LightningModule):
         # ----------------------------------------------------------------
         # Generator step
         # ----------------------------------------------------------------
-        generated = self.generator(he, uni_dropped, labels_dropped, edge_input=edge_input, he_h=he_h)
+        gen_out = self.generator(he, uni_dropped, labels_dropped, edge_input=edge_input, he_h=he_h)
+        if self.generator.use_alignment:
+            generated, (affine_matrix, kp_src, kp_tgt) = gen_out
+        else:
+            generated = gen_out
+            affine_matrix = None
 
         # ---- LPIPS losses ----
         # Case A: full-resolution LPIPS (IHC H-channel drives structure, so pixel
@@ -774,6 +785,13 @@ class UNIStainNetTrainer(pl.LightningModule):
             loss_g = loss_g + self.hparams.bg_white_weight * loss_bg
             self.log('train/bg_white', loss_bg, prog_bar=False)
 
+        # K-Stain Perceptual Loss
+        kstain_weight = getattr(self.hparams, 'kstain_perceptual_weight', 0.0)
+        if kstain_weight > 0 and self.kstain_perc_loss is not None:
+            loss_kstain_perc = self.kstain_perc_loss(generated, her2)
+            loss_g = loss_g + kstain_weight * loss_kstain_perc
+            self.log('train/kstain_perceptual', loss_kstain_perc, prog_bar=False)
+
         # PatchNCE loss (contrastive: H&E input vs generated, never sees GT)
         if self.hparams.patchnce_weight > 0 and self.patchnce_loss is not None:
             feats_he = self.generator.encode(he)
@@ -805,9 +823,15 @@ class UNIStainNetTrainer(pl.LightningModule):
             else:
                 gen_for_disc = generated
 
-            # Conditional discriminator (paired: generated+HE vs real_HER2+HE)
+            # Conditional discriminator (KGD: paired generated+affine_aligned_HE vs real_HER2+affine_aligned_HE)
+            # Warp the H&E image using the affine matrix to condition the discriminator on aligned structure
+            if affine_matrix is not None:
+                he_aligned = warp_affine(he_for_disc, affine_matrix)
+            else:
+                he_aligned = he_for_disc
+
             if self.hparams.adversarial_weight > 0:
-                fake_input = torch.cat([gen_for_disc, he_for_disc], dim=1)
+                fake_input = torch.cat([gen_for_disc, he_aligned], dim=1)
                 disc_outputs = self.discriminator(fake_input)
                 loss_adv = sum(hinge_loss_g(out) for out in disc_outputs) / len(disc_outputs)
                 loss_g = loss_g + self.hparams.adversarial_weight * loss_adv
@@ -857,7 +881,12 @@ class UNIStainNetTrainer(pl.LightningModule):
         loss_uncond_d = torch.tensor(0.0, device=self.device)
         if self.global_step >= self.hparams.adversarial_start_step and any_adv:
             with torch.no_grad():
-                fake_detached = self.generator(he, uni_dropped, labels_dropped, edge_input=edge_input, he_h=he_h)
+                gen_out_detached = self.generator(he, uni_dropped, labels_dropped, edge_input=edge_input, he_h=he_h)
+                if self.generator.use_alignment:
+                    fake_detached, (affine_matrix_det, _, _) = gen_out_detached
+                else:
+                    fake_detached = gen_out_detached
+                    affine_matrix_det = None
 
             # For 1024, downsample for disc
             if img_sz == 1024:
@@ -865,10 +894,15 @@ class UNIStainNetTrainer(pl.LightningModule):
             else:
                 fake_det_disc = fake_detached
 
-            # Conditional discriminator
+            # Conditional discriminator (KGD)
+            if affine_matrix_det is not None:
+                he_aligned_det = warp_affine(he_for_disc, affine_matrix_det)
+            else:
+                he_aligned_det = he_for_disc
+
             if self.hparams.adversarial_weight > 0:
-                real_input = torch.cat([her2_for_disc, he_for_disc], dim=1)
-                fake_input = torch.cat([fake_det_disc, he_for_disc], dim=1)
+                real_input = torch.cat([her2_for_disc, he_aligned_det], dim=1)
+                fake_input = torch.cat([fake_det_disc, he_aligned_det], dim=1)
 
                 disc_real = self.discriminator(real_input)
                 disc_fake = self.discriminator(fake_input)
@@ -997,7 +1031,11 @@ class UNIStainNetTrainer(pl.LightningModule):
 
         # Use EMA generator
         with torch.no_grad():
-            generated = self.generator_ema(he, uni, labels, edge_input=edge_input, he_h=he_h)
+            gen_out = self.generator_ema(he, uni, labels, edge_input=edge_input, he_h=he_h)
+            if self.generator_ema.use_alignment:
+                generated, _ = gen_out
+            else:
+                generated = gen_out
 
         # LPIPS (4x downsample: 128 for 512, 256 for 1024)
         lpips_size = self.hparams.image_size // 4
@@ -1104,13 +1142,23 @@ class UNIStainNetTrainer(pl.LightningModule):
         gen = self.generator_ema if hasattr(self, 'generator_ema') else self.generator
 
         if guidance_scale <= 1.0:
-            return gen(he_images, uni_features, labels, edge_input=edge_input, he_h=he_h)
+            out = gen(he_images, uni_features, labels, edge_input=edge_input, he_h=he_h)
+            if gen.use_alignment:
+                out = out[0]
+            return out
 
         # Classifier-free guidance
         null_labels = torch.full_like(labels, self.null_class)
 
-        output_cond = gen(he_images, uni_features, labels, edge_input=edge_input, he_h=he_h)
-        output_uncond = gen(he_images, uni_features, null_labels, edge_input=edge_input, he_h=he_h)
+        output_cond_out = gen(he_images, uni_features, labels, edge_input=edge_input, he_h=he_h)
+        output_uncond_out = gen(he_images, uni_features, null_labels, edge_input=edge_input, he_h=he_h)
+
+        if gen.use_alignment:
+            output_cond = output_cond_out[0]
+            output_uncond = output_uncond_out[0]
+        else:
+            output_cond = output_cond_out
+            output_uncond = output_uncond_out
 
         output = output_uncond + guidance_scale * (output_cond - output_uncond)
         return output.clamp(-1, 1)
