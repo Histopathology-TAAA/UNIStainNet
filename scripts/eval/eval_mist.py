@@ -133,6 +133,7 @@ def main():
     parser.add_argument('--skip_uni_fid', action='store_true')
     parser.add_argument('--composite_bg', action='store_true')
     parser.add_argument('--no_downcasting', action='store_true', help='Disable float16 downcasting for metric accuracy')
+    parser.add_argument('--enable_stn_alignment', action='store_true', help='Enable STN alignment during evaluation (disabled by default)')
     args = parser.parse_args()
 
     if args.output_dir is None:
@@ -151,14 +152,14 @@ def main():
     model = UNIStainNetTrainer.load_from_checkpoint(args.checkpoint, strict=False)
     model = model.cuda().eval()
 
-    # Force bypass of the Alignment Network (STN) during evaluation.
-    # Since we have no target IHC to align to during inference, bypassing the STN 
-    # entirely guarantees 100% structural fidelity to the input H&E and prevents 
-    # interpolation blur from degrading the SSIM/NMI metrics.
+    # Control the Alignment Network (STN) during evaluation.
+    # By default, bypassing the STN entirely guarantees 100% structural fidelity 
+    # to the input H&E and prevents interpolation blur from degrading the SSIM/NMI metrics.
+    # However, it can be enabled via the --enable_stn_alignment flag.
     if hasattr(model.generator, 'use_alignment'):
-        model.generator.use_alignment = False
+        model.generator.use_alignment = args.enable_stn_alignment
     if hasattr(model, 'generator_ema') and hasattr(model.generator_ema, 'use_alignment'):
-        model.generator_ema.use_alignment = False
+        model.generator_ema.use_alignment = args.enable_stn_alignment
 
     # Read spatial size from checkpoint hparams (default 32 for backward compat)
     spatial_pool_size = getattr(model.hparams, 'uni_spatial_size', 32)
