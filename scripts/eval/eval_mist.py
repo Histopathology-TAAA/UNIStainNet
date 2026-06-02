@@ -99,17 +99,22 @@ def generate_for_stain(model, uni_model, dataloader, target_stain,
         stain_labels = torch.full((he.shape[0],), STAIN_TO_LABEL[target_stain],
                                   dtype=torch.long, device=model.device)
 
-        # Extract UNI features
-        uni = extract_features_from_sub_crops(uni_model, uni_sub_crops,
-                                              spatial_pool_size=spatial_pool_size).cuda()
+        # Use bf16 autocast to match training precision (trainer runs under precision='bf16').
+        # Without this, UNI features and generator activations are computed in fp32,
+        # producing numerically different results that degrade output quality.
+        with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+            # Extract UNI features
+            uni = extract_features_from_sub_crops(uni_model, uni_sub_crops,
+                                                  spatial_pool_size=spatial_pool_size).cuda()
 
-        edge_input = ihc_h if aligned else he_h
+            edge_input = ihc_h if aligned else he_h
 
-        gen = model.generate(he, uni, stain_labels,
-                             guidance_scale=guidance_scale,
-                             seed=seed + batch_idx,
-                             edge_input=edge_input,
-                             he_h=he_h)
+            gen = model.generate(he, uni, stain_labels,
+                                 guidance_scale=guidance_scale,
+                                 seed=seed + batch_idx,
+                                 edge_input=edge_input,
+                                 he_h=he_h)
+            gen = gen.float()  # cast back to fp32 for metric computation
 
         if no_downcasting:
             all_gen.append(gen.cpu())
