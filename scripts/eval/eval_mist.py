@@ -84,27 +84,31 @@ def extract_features_from_sub_crops(uni_model, uni_sub_crops, spatial_pool_size=
 
 
 @torch.no_grad()
-def generate_for_stain(model, uni_model, dataloader, stain_label, guidance_scale=1.0, seed=42,
-                       spatial_pool_size=32, no_downcasting=False):
+def generate_for_stain(model, uni_model, dataloader, target_stain,
+                       guidance_scale=1.0, seed=42, no_downcasting=False,
+                       aligned=False, spatial_pool_size=32):
     """Generate IHC images for a specific stain."""
     all_gen, all_real, all_he, all_fnames = [], [], [], []
 
     for batch_idx, batch in enumerate(tqdm(dataloader, desc=f"Generating")):
         he, her2, he_h, ihc_h, uni_sub_crops, labels, fnames = batch
         he, her2 = he.cuda().float(), her2.cuda().float()
-        he_h = he_h.cuda().float()
+        he_h, ihc_h = he_h.cuda().float(), ihc_h.cuda().float()
 
         # Override labels with stain label
-        stain_labels = torch.full((he.size(0),), stain_label, device='cuda', dtype=torch.long)
+        stain_labels = torch.full((he.shape[0],), STAIN_TO_LABEL[target_stain],
+                                  dtype=torch.long, device=model.device)
 
         # Extract UNI features
         uni = extract_features_from_sub_crops(uni_model, uni_sub_crops,
                                               spatial_pool_size=spatial_pool_size).cuda()
 
+        edge_input = ihc_h if aligned else he_h
+
         gen = model.generate(he, uni, stain_labels,
                              guidance_scale=guidance_scale,
                              seed=seed + batch_idx,
-                             edge_input=he_h,
+                             edge_input=edge_input,
                              he_h=he_h)
 
         if no_downcasting:
@@ -134,6 +138,7 @@ def main():
     parser.add_argument('--composite_bg', action='store_true')
     parser.add_argument('--no_downcasting', action='store_true', help='Disable float16 downcasting for metric accuracy')
     parser.add_argument('--enable_stn_alignment', action='store_true', help='Enable STN alignment during evaluation (disabled by default)')
+    parser.add_argument('--aligned', action='store_true', help='Use target IHC H-channel instead of H&E H-channel for generation to measure theoretical upper bound')
     args = parser.parse_args()
 
     if args.output_dir is None:
@@ -202,10 +207,12 @@ def main():
 
         # Generate
         gen, real, he, fnames = generate_for_stain(
-            model, uni_model, test_loader, stain_label,
+            model, uni_model, target_stain=stain,
             guidance_scale=args.guidance_scale,
-            spatial_pool_size=spatial_pool_size,
-            no_downcasting=args.no_downcasting)
+            seed=42,
+            no_downcasting=args.no_downcasting,
+            aligned=args.aligned,
+            spatial_pool_size=spatial_pool_size)
         print(f"Generated {len(gen)} images")
 
         if args.composite_bg:
