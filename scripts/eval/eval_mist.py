@@ -207,7 +207,7 @@ def main():
 
         # Generate
         gen, real, he, fnames = generate_for_stain(
-            model, uni_model, target_stain=stain,
+            model, uni_model, test_loader, target_stain=stain,
             guidance_scale=args.guidance_scale,
             seed=42,
             no_downcasting=args.no_downcasting,
