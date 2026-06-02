@@ -993,21 +993,28 @@ class UNIStainNetTrainer(pl.LightningModule):
         # Per-label sample collectors (for multi-stain visual grids)
         self._val_per_label_samples = {}
 
-    def _log_sample_grid(self, he, her2_01, gen_01, key):
-        """Log H&E | Real | Gen grid to wandb."""
+    def _log_sample_grid(self, he, her2_01, gen_01, key, gen_a_01=None):
+        """Log sample grid to wandb."""
         n = min(4, len(he))
         he_01 = ((he[:n].cpu() + 1) / 2).clamp(0, 1)
         grid_images = []
         for i in range(n):
-            grid_images.extend([
+            row = [
                 he_01[i],
                 her2_01[i].cpu(),
                 gen_01[i].cpu(),
-            ])
-        grid = torchvision.utils.make_grid(grid_images, nrow=3, padding=2)
+            ]
+            if gen_a_01 is not None and len(gen_a_01) > i:
+                row.append(gen_a_01[i].cpu())
+            grid_images.extend(row)
+            
+        nrow = 4 if gen_a_01 is not None and len(gen_a_01) > 0 else 3
+        caption = 'H&E | Real | Gen (Case B) | Gen (Case A)' if nrow == 4 else 'H&E | Real | Gen'
+        
+        grid = torchvision.utils.make_grid(grid_images, nrow=nrow, padding=2)
         if self.logger:
             self.logger.experiment.log({
-                key: [wandb.Image(grid, caption='H&E | Real | Gen')],
+                key: [wandb.Image(grid, caption=caption)],
                 'global_step': self.global_step,
             })
 
@@ -1029,13 +1036,21 @@ class UNIStainNetTrainer(pl.LightningModule):
         if self.hparams.disable_class:
             labels = torch.full_like(labels, self.hparams.null_class)
 
-        # Use EMA generator
+        # Use EMA generator (Case B)
         with torch.no_grad():
             gen_out = self.generator_ema(he, uni, labels, edge_input=edge_input, he_h=he_h)
             if self.generator_ema.use_alignment:
                 generated, _ = gen_out
             else:
                 generated = gen_out
+                
+        # Optional: Generate Case A for visual logging if case_a_prob > 0
+        generated_a, gen_a_01 = None, None
+        if self.hparams.case_a_prob > 0:
+            with torch.no_grad():
+                gen_out_a = self.generator_ema(he, uni, labels, edge_input=ihc_h, he_h=he_h)
+                generated_a = gen_out_a[0] if self.generator_ema.use_alignment else gen_out_a
+                gen_a_01 = ((generated_a + 1) / 2).clamp(0, 1)
 
         # LPIPS (4x downsample: 128 for 512, 256 for 1024)
         lpips_size = self.hparams.image_size // 4
@@ -1079,18 +1094,20 @@ class UNIStainNetTrainer(pl.LightningModule):
                 if lbl == self.hparams.null_class:
                     continue
                 if lbl not in self._val_per_label_samples:
-                    self._val_per_label_samples[lbl] = {'he': [], 'real': [], 'gen': []}
+                    self._val_per_label_samples[lbl] = {'he': [], 'real': [], 'gen_b': [], 'gen_a': []}
                 bucket = self._val_per_label_samples[lbl]
                 if len(bucket['he']) < 4:
                     bucket['he'].append(he[i].cpu())
                     bucket['real'].append(her2_01[i].cpu())
-                    bucket['gen'].append(gen_01[i].cpu())
+                    bucket['gen_b'].append(gen_01[i].cpu())
+                    if gen_a_01 is not None:
+                        bucket['gen_a'].append(gen_a_01[i].cpu())
 
         # Log sample grids: first batch (fixed) + one random batch
         if batch_idx == 0:
-            self._log_sample_grid(he, her2_01, gen_01, 'val/samples_fixed')
+            self._log_sample_grid(he, her2_01, gen_01, 'val/samples_fixed', gen_a_01=gen_a_01)
         elif batch_idx == self._random_val_batch_idx:
-            self._log_sample_grid(he, her2_01, gen_01, 'val/samples_random')
+            self._log_sample_grid(he, her2_01, gen_01, 'val/samples_random', gen_a_01=gen_a_01)
 
     def on_validation_epoch_end(self):
         """Log per-label sample grids if multiple labels are present."""
@@ -1111,11 +1128,14 @@ class UNIStainNetTrainer(pl.LightningModule):
             if not bucket['he'] or not self.logger:
                 continue
             name = label_names[lbl] if label_names and lbl < len(label_names) else str(lbl)
+            
+            gen_a_stack = torch.stack(bucket['gen_a']) if len(bucket['gen_a']) > 0 else None
             self._log_sample_grid(
                 torch.stack(bucket['he']),
                 torch.stack(bucket['real']),
-                torch.stack(bucket['gen']),
+                torch.stack(bucket['gen_b']),
                 f'val/samples_{name}',
+                gen_a_01=gen_a_stack
             )
 
         self._val_per_label_samples = {}
