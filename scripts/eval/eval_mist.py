@@ -85,7 +85,7 @@ def extract_features_from_sub_crops(uni_model, uni_sub_crops, spatial_pool_size=
 
 @torch.no_grad()
 def generate_for_stain(model, uni_model, dataloader, stain_label, guidance_scale=1.0, seed=42,
-                       spatial_pool_size=32, no_downcasting=False):
+                       spatial_pool_size=32, no_downcasting=False, aligned=False):
     """Generate IHC images for a specific stain."""
     all_gen, all_real, all_he, all_fnames = [], [], [], []
 
@@ -93,19 +93,31 @@ def generate_for_stain(model, uni_model, dataloader, stain_label, guidance_scale
         he, her2, he_h, ihc_h, uni_sub_crops, labels, fnames = batch
         he, her2 = he.cuda().float(), her2.cuda().float()
         he_h = he_h.cuda().float()
+        ihc_h = ihc_h.cuda().float()
 
         # Override labels with stain label
         stain_labels = torch.full((he.size(0),), stain_label, device='cuda', dtype=torch.long)
+        
+        edge_input = ihc_h if aligned else he_h
 
-        # Extract UNI features
-        uni = extract_features_from_sub_crops(uni_model, uni_sub_crops,
-                                              spatial_pool_size=spatial_pool_size).cuda()
+        with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+            # Extract UNI features
+            uni = extract_features_from_sub_crops(uni_model, uni_sub_crops,
+                                                  spatial_pool_size=spatial_pool_size).cuda()
 
-        gen = model.generate(he, uni, stain_labels,
-                             guidance_scale=guidance_scale,
-                             seed=seed + batch_idx,
-                             edge_input=he_h,
-                             he_h=he_h)
+            gen_out = model.generate(he, uni, stain_labels,
+                                 guidance_scale=guidance_scale,
+                                 seed=seed + batch_idx,
+                                 edge_input=edge_input,
+                                 he_h=he_h)
+            
+            # Backward compatibility: older models return tensor, newer alignment models return tuple
+            if isinstance(gen_out, tuple):
+                gen = gen_out[0]
+            else:
+                gen = gen_out
+
+            gen = gen.float()
 
         if no_downcasting:
             all_gen.append(gen.cpu())
@@ -134,6 +146,7 @@ def main():
     parser.add_argument('--composite_bg', action='store_true')
     parser.add_argument('--no_downcasting', action='store_true', help='Disable float16 downcasting for metric accuracy')
     parser.add_argument('--enable_stn_alignment', action='store_true', help='Enable STN alignment during evaluation (disabled by default)')
+    parser.add_argument('--aligned', action='store_true', help='Evaluate on the aligned case using IHC ground-truth structure.')
     args = parser.parse_args()
 
     if args.output_dir is None:
@@ -205,7 +218,8 @@ def main():
             model, uni_model, test_loader, stain_label,
             guidance_scale=args.guidance_scale,
             spatial_pool_size=spatial_pool_size,
-            no_downcasting=args.no_downcasting)
+            no_downcasting=args.no_downcasting,
+            aligned=args.aligned)
         print(f"Generated {len(gen)} images")
 
         if args.composite_bg:
@@ -231,14 +245,19 @@ def main():
         stain_results['iod'] = compute_iod_metrics(gen, real, labels=None)
 
         # HE-H SSIM and HE-NMI metrics
-        print(f"  Computing HE-H SSIM and HE-NMI...")
-        he_h_ssim = compute_he_h_ssim(gen, real, dab_extractor=dab_extractor)
-        he_nmi = compute_he_nmi(gen, real, dab_extractor=dab_extractor)
+        print(f"  Computing structure metrics...")
+        struct_target = real if args.aligned else he
+        is_target_he = not args.aligned
+        
+        h_ssim = compute_he_h_ssim(gen, struct_target, is_target_he=is_target_he, dab_extractor=dab_extractor)
+        nmi = compute_he_nmi(gen, struct_target, is_target_he=is_target_he, dab_extractor=dab_extractor)
+        
+        prefix = 'ihc' if args.aligned else 'he'
         stain_results['he_structure'] = {
-            'he_h_ssim_mean': he_h_ssim['he_h_ssim_mean'],
-            'he_h_ssim_std': he_h_ssim['he_h_ssim_std'],
-            'he_nmi_mean': he_nmi['he_nmi_mean'],
-            'he_nmi_std': he_nmi['he_nmi_std'],
+            f'{prefix}_h_ssim_mean': h_ssim['ssim_mean'],
+            f'{prefix}_h_ssim_std': h_ssim['ssim_std'],
+            f'{prefix}_nmi_mean': nmi['nmi_mean'],
+            f'{prefix}_nmi_std': nmi['nmi_std'],
         }
 
         # UNI-FID (per-stain)
@@ -260,8 +279,8 @@ def main():
               f"LPIPS={iq['lpips_mean']:.3f} | "
               f"SSIM={iq['ssim_mean']:.3f} | "
               f"Pearson-r={dab.get('dab_pearson_r', 0):.3f} | "
-              f"HE-H-SSIM={he_struct['he_h_ssim_mean']:.3f} | "
-              f"HE-NMI={he_struct['he_nmi_mean']:.3f}")
+              f"{prefix.upper()}-H-SSIM={he_struct[f'{prefix}_h_ssim_mean']:.3f} | "
+              f"{prefix.upper()}-NMI={he_struct[f'{prefix}_nmi_mean']:.3f}")
 
         # Explicitly free memory before next stain
         del gen, real, he, fnames
@@ -278,11 +297,12 @@ def main():
     print("MACRO-AVERAGED RESULTS")
     print(f"{'='*70}")
 
-    metric_keys = ['fid_inception', 'kid_mean_x1000', 'lpips_mean', 'lpips_128_mean',
+    metric_keys = ['fid_inception', 'fid_uni', 'kid_mean_x1000', 'lpips_mean', 'lpips_128_mean',
                     'ssim_mean', 'psnr_mean']
     dab_keys = ['dab_mae_overall', 'dab_pearson_r', 'dab_kl', 'dab_jsd']
     iod_keys = ['miod_diff', 'miod_abs_diff']
-    he_struct_keys = ['he_h_ssim_mean', 'he_nmi_mean']
+    prefix = 'ihc' if args.aligned else 'he'
+    he_struct_keys = [f'{prefix}_h_ssim_mean', f'{prefix}_nmi_mean']
 
     macro = {}
     for key in metric_keys:
@@ -318,7 +338,7 @@ def main():
     for key in metric_keys + dab_keys + iod_keys + he_struct_keys:
         row = f"{key:<20s}"
         for s in args.stains:
-            if key in ['fid_inception', 'kid_mean_x1000']:
+            if key in ['fid_inception', 'fid_uni', 'kid_mean_x1000', 'lpips_mean', 'lpips_128_mean', 'ssim_mean', 'psnr_mean']:
                 src = 'image_quality'
             elif key.startswith('dab'):
                 src = 'dab'
