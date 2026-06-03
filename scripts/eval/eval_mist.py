@@ -99,6 +99,8 @@ def generate_for_stain(model, uni_model, dataloader, stain_label, guidance_scale
         stain_labels = torch.full((he.size(0),), stain_label, device='cuda', dtype=torch.long)
         
         edge_input = ihc_h if aligned else he_h
+        # h_channel for 4-ch encoder: same as edge_input (Case B = he_h, aligned = ihc_h)
+        h_channel = edge_input
 
         with torch.amp.autocast('cuda', dtype=torch.bfloat16):
             # Extract UNI features
@@ -109,7 +111,8 @@ def generate_for_stain(model, uni_model, dataloader, stain_label, guidance_scale
                                  guidance_scale=guidance_scale,
                                  seed=seed + batch_idx,
                                  edge_input=edge_input,
-                                 he_h=he_h)
+                                 he_h=he_h,
+                                 h_channel=h_channel)
             
             # Backward compatibility: older models return tensor, newer alignment models return tuple
             if isinstance(gen_out, tuple):

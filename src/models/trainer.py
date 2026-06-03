@@ -111,6 +111,8 @@ class UNIStainNetTrainer(pl.LightningModule):
         # Spatial Alignment Network (STN)
         use_alignment=False,
         learnable_sobel=False,
+        # RGB dropout: probability of zeroing RGB channels (training only)
+        he_rgb_dropout=0.0,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -271,6 +273,20 @@ class UNIStainNetTrainer(pl.LightningModule):
                     new_b[:2] = old_b
                     new_b[2] = 3.0  # Safe identity mask initialization (sigmoid(3) = 0.95)
                     state_dict[bias_key] = new_b
+
+        # Backward compatibility for 3-channel → 4-channel encoder input
+        # Zero-pad the first conv weights so the new H-channel dimension starts at zero
+        for enc_key in ['generator.enc1.0.weight', 'generator_ema.enc1.0.weight',
+                        'generator.enc0.0.weight', 'generator_ema.enc0.0.weight']:
+            if enc_key in state_dict and state_dict[enc_key].shape[1] == 3:
+                old_w = state_dict[enc_key]
+                # Pad from [out_ch, 3, k, k] to [out_ch, 4, k, k]
+                new_w = torch.zeros(
+                    (old_w.shape[0], 4, old_w.shape[2], old_w.shape[3]),
+                    device=old_w.device, dtype=old_w.dtype
+                )
+                new_w[:, :3, :, :] = old_w
+                state_dict[enc_key] = new_w
 
     def _load_uni_model(self):
         """Lazily load UNI ViT-L/16 for on-the-fly feature extraction."""
@@ -622,8 +638,18 @@ class UNIStainNetTrainer(pl.LightningModule):
         #         he_edge_weight loss is multi-scale against H&E H-channel
         use_case_a = (self.hparams.case_a_prob > 0.0 and
                       torch.rand(1).item() < self.hparams.case_a_prob)
-        # edge_input: [B, 1, H, W] passed to generator
+        # edge_input: [B, 1, H, W] passed to edge encoder
         edge_input = ihc_h if use_case_a else he_h
+        # h_channel: [B, 1, H, W] concatenated to main encoder input (4th channel)
+        h_channel = ihc_h if use_case_a else he_h
+
+        # RGB dropout: zero out H&E RGB channels with probability he_rgb_dropout
+        # Forces the model to sometimes rely purely on the H-channel structure
+        he_rgb_dropout = getattr(self.hparams, 'he_rgb_dropout', 0.0)
+        if he_rgb_dropout > 0.0 and torch.rand(1).item() < he_rgb_dropout:
+            he_input = torch.zeros_like(he)
+        else:
+            he_input = he
 
         # On-the-fly UNI extraction: dataset returns [B, 16, 3, 224, 224] sub-crops
         if self._uni_extract_on_the_fly:
@@ -645,7 +671,9 @@ class UNIStainNetTrainer(pl.LightningModule):
         # ----------------------------------------------------------------
         # Generator step
         # ----------------------------------------------------------------
-        generated = self.generator(he, uni_dropped, labels_dropped, edge_input=edge_input, he_h=he_h)
+        generated = self.generator(he_input, uni_dropped, labels_dropped,
+                                    edge_input=edge_input, he_h=he_h,
+                                    h_channel=h_channel)
 
         # ---- LPIPS losses ----
         # Case A: full-resolution LPIPS (IHC H-channel drives structure, so pixel
@@ -857,7 +885,9 @@ class UNIStainNetTrainer(pl.LightningModule):
         loss_uncond_d = torch.tensor(0.0, device=self.device)
         if self.global_step >= self.hparams.adversarial_start_step and any_adv:
             with torch.no_grad():
-                fake_detached = self.generator(he, uni_dropped, labels_dropped, edge_input=edge_input, he_h=he_h)
+                fake_detached = self.generator(he_input, uni_dropped, labels_dropped,
+                                              edge_input=edge_input, he_h=he_h,
+                                              h_channel=h_channel)
 
             # For 1024, downsample for disc
             if img_sz == 1024:
@@ -959,29 +989,37 @@ class UNIStainNetTrainer(pl.LightningModule):
         # Per-label sample collectors (for multi-stain visual grids)
         self._val_per_label_samples = {}
 
-    def _log_sample_grid(self, he, her2_01, gen_01, key):
-        """Log H&E | Real | Gen grid to wandb."""
+    def _log_sample_grid(self, he, her2_01, gen_b_01, key, gen_a_01=None):
+        """Log sample grid to wandb.
+        
+        If gen_a_01 is provided: H&E | Case B | GT | Case A (4 columns)
+        Otherwise: H&E | Gen | GT (3 columns)
+        """
         n = min(4, len(he))
         he_01 = ((he[:n].cpu() + 1) / 2).clamp(0, 1)
         grid_images = []
         for i in range(n):
-            grid_images.extend([
+            row = [
                 he_01[i],
+                gen_b_01[i].cpu(),
                 her2_01[i].cpu(),
-                gen_01[i].cpu(),
-            ])
-        grid = torchvision.utils.make_grid(grid_images, nrow=3, padding=2)
+            ]
+            if gen_a_01 is not None and len(gen_a_01) > i:
+                row.append(gen_a_01[i].cpu())
+            grid_images.extend(row)
+
+        nrow = 4 if gen_a_01 is not None and len(gen_a_01) > 0 else 3
+        caption = 'H&E | Case B | GT | Case A' if nrow == 4 else 'H&E | Gen | GT'
+
+        grid = torchvision.utils.make_grid(grid_images, nrow=nrow, padding=2)
         if self.logger:
             self.logger.experiment.log({
-                key: [wandb.Image(grid, caption='H&E | Real | Gen')],
+                key: [wandb.Image(grid, caption=caption)],
                 'global_step': self.global_step,
             })
 
     def validation_step(self, batch, batch_idx):
         he, her2, he_h, ihc_h, uni_or_crops, labels, fnames = batch
-        # Validation always uses Case B (H&E H-channel as edge input)
-        # — we never have ground-truth IHC at inference time.
-        edge_input = he_h  # [B, 1, H, W]
 
         # On-the-fly UNI extraction
         if self._uni_extract_on_the_fly:
@@ -995,24 +1033,27 @@ class UNIStainNetTrainer(pl.LightningModule):
         if self.hparams.disable_class:
             labels = torch.full_like(labels, self.hparams.null_class)
 
-        # Use EMA generator
+        # ---- Case B generation (metrics + visual) ----
+        # Case B: edge_input=he_h, h_channel=he_h (real-world inference scenario)
         with torch.no_grad():
-            generated = self.generator_ema(he, uni, labels, edge_input=edge_input, he_h=he_h)
+            generated_b = self.generator_ema(he, uni, labels,
+                                            edge_input=he_h, he_h=he_h,
+                                            h_channel=he_h)
 
         # LPIPS (4x downsample: 128 for 512, 256 for 1024)
         lpips_size = self.hparams.image_size // 4
-        gen_lpips = F.interpolate(generated, size=lpips_size, mode='bilinear', align_corners=False)
+        gen_lpips = F.interpolate(generated_b, size=lpips_size, mode='bilinear', align_corners=False)
         her2_lpips = F.interpolate(her2, size=lpips_size, mode='bilinear', align_corners=False)
         lpips_val = self.lpips_fn(gen_lpips, her2_lpips).mean()
 
         # SSIM
-        gen_01 = ((generated + 1) / 2).clamp(0, 1)
+        gen_b_01 = ((generated_b + 1) / 2).clamp(0, 1)
         her2_01 = ((her2 + 1) / 2).clamp(0, 1)
         from torchmetrics.functional.image import structural_similarity_index_measure
-        ssim_val = structural_similarity_index_measure(gen_01, her2_01, data_range=1.0)
+        ssim_val = structural_similarity_index_measure(gen_b_01, her2_01, data_range=1.0)
 
         # DAB MAE (canonical: mean of top-10%)
-        dab_gen = self.dab_extractor.extract_dab_intensity(generated.float().cpu(), normalize="none")
+        dab_gen = self.dab_extractor.extract_dab_intensity(generated_b.float().cpu(), normalize="none")
         dab_real = self.dab_extractor.extract_dab_intensity(her2.float().cpu(), normalize="none")
 
         def p90_score(dab):
@@ -1030,9 +1071,18 @@ class UNIStainNetTrainer(pl.LightningModule):
         self.log('val/ssim', ssim_val, prog_bar=True, sync_dist=True)
         self.log('val/dab_mae', dab_mae, prog_bar=True, sync_dist=True)
 
-        # Update validation FID
+        # Update validation FID (Case B only)
         self.val_fid.update(her2_01, real=True)
-        self.val_fid.update(gen_01, real=False)
+        self.val_fid.update(gen_b_01, real=False)
+
+        # ---- Case A generation (visual only, no metrics) ----
+        gen_a_01 = None
+        if self.hparams.case_a_prob > 0:
+            with torch.no_grad():
+                generated_a = self.generator_ema(he, uni, labels,
+                                                edge_input=ihc_h, he_h=he_h,
+                                                h_channel=ihc_h)
+            gen_a_01 = ((generated_a + 1) / 2).clamp(0, 1)
 
         # Collect per-label samples for visual grids (multi-stain only)
         if hasattr(self, '_val_per_label_samples'):
@@ -1041,18 +1091,20 @@ class UNIStainNetTrainer(pl.LightningModule):
                 if lbl == self.hparams.null_class:
                     continue
                 if lbl not in self._val_per_label_samples:
-                    self._val_per_label_samples[lbl] = {'he': [], 'real': [], 'gen': []}
+                    self._val_per_label_samples[lbl] = {'he': [], 'real': [], 'gen_b': [], 'gen_a': []}
                 bucket = self._val_per_label_samples[lbl]
                 if len(bucket['he']) < 4:
                     bucket['he'].append(he[i].cpu())
                     bucket['real'].append(her2_01[i].cpu())
-                    bucket['gen'].append(gen_01[i].cpu())
+                    bucket['gen_b'].append(gen_b_01[i].cpu())
+                    if gen_a_01 is not None:
+                        bucket['gen_a'].append(gen_a_01[i].cpu())
 
         # Log sample grids: first batch (fixed) + one random batch
         if batch_idx == 0:
-            self._log_sample_grid(he, her2_01, gen_01, 'val/samples_fixed')
+            self._log_sample_grid(he, her2_01, gen_b_01, 'val/samples_fixed', gen_a_01=gen_a_01)
         elif batch_idx == self._random_val_batch_idx:
-            self._log_sample_grid(he, her2_01, gen_01, 'val/samples_random')
+            self._log_sample_grid(he, her2_01, gen_b_01, 'val/samples_random', gen_a_01=gen_a_01)
 
     def on_validation_epoch_end(self):
         """Log per-label sample grids if multiple labels are present."""
@@ -1073,11 +1125,14 @@ class UNIStainNetTrainer(pl.LightningModule):
             if not bucket['he'] or not self.logger:
                 continue
             name = label_names[lbl] if label_names and lbl < len(label_names) else str(lbl)
+
+            gen_a_stack = torch.stack(bucket['gen_a']) if len(bucket['gen_a']) > 0 else None
             self._log_sample_grid(
                 torch.stack(bucket['he']),
                 torch.stack(bucket['real']),
-                torch.stack(bucket['gen']),
+                torch.stack(bucket['gen_b']),
                 f'val/samples_{name}',
+                gen_a_01=gen_a_stack
             )
 
         self._val_per_label_samples = {}
@@ -1085,7 +1140,7 @@ class UNIStainNetTrainer(pl.LightningModule):
     @torch.no_grad()
     def generate(self, he_images, uni_features, labels,
                  num_inference_steps=None, guidance_scale=1.0, seed=None,
-                 edge_input=None, he_h=None):
+                 edge_input=None, he_h=None, h_channel=None):
         """Generate IHC images from H&E input.
 
         Args:
@@ -1095,8 +1150,9 @@ class UNIStainNetTrainer(pl.LightningModule):
             num_inference_steps: ignored (single forward pass)
             guidance_scale: CFG scale (1.0 = no guidance)
             seed: random seed (for reproducibility, though model is deterministic)
-            edge_input: optional 1-ch target H-channel
+            edge_input: optional 1-ch target H-channel for edge encoder
             he_h: optional 1-ch source H&E H-channel for alignment
+            h_channel: optional 1-ch H-channel concatenated to encoder input (4th channel)
         """
         if seed is not None:
             torch.manual_seed(seed)
@@ -1104,13 +1160,16 @@ class UNIStainNetTrainer(pl.LightningModule):
         gen = self.generator_ema if hasattr(self, 'generator_ema') else self.generator
 
         if guidance_scale <= 1.0:
-            return gen(he_images, uni_features, labels, edge_input=edge_input, he_h=he_h)
+            return gen(he_images, uni_features, labels,
+                       edge_input=edge_input, he_h=he_h, h_channel=h_channel)
 
         # Classifier-free guidance
         null_labels = torch.full_like(labels, self.null_class)
 
-        output_cond = gen(he_images, uni_features, labels, edge_input=edge_input, he_h=he_h)
-        output_uncond = gen(he_images, uni_features, null_labels, edge_input=edge_input, he_h=he_h)
+        output_cond = gen(he_images, uni_features, labels,
+                          edge_input=edge_input, he_h=he_h, h_channel=h_channel)
+        output_uncond = gen(he_images, uni_features, null_labels,
+                            edge_input=edge_input, he_h=he_h, h_channel=h_channel)
 
         output = output_uncond + guidance_scale * (output_cond - output_uncond)
         return output.clamp(-1, 1)

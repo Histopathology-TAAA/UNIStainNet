@@ -155,16 +155,17 @@ class SPADEUNetGenerator(nn.Module):
             edge_ch = {512: 0, 256: 0, 128: 0, 64: 0, 32: 0}
 
         # === 1024 support: extra encoder/decoder levels ===
+        # Encoder input: 4 channels (3ch H&E RGB + 1ch H-channel)
         if image_size == 1024:
             # enc0: 1024→512 (lightweight, just spatial downsample)
             self.enc0 = nn.Sequential(
-                nn.Conv2d(3, 32, 4, stride=2, padding=1),
+                nn.Conv2d(4, 32, 4, stride=2, padding=1),
                 nn.LeakyReLU(0.2, inplace=True),
             )
-            enc1_in_ch = 32  # enc1 takes enc0 output, not raw H&E
+            enc1_in_ch = 32  # enc1 takes enc0 output, not raw input
         else:
             self.enc0 = None
-            enc1_in_ch = 3  # enc1 takes raw H&E at 512
+            enc1_in_ch = 4  # enc1 takes 4ch input at 512
 
         # Encoder
         self.enc1 = nn.Sequential(  # 512→256
@@ -259,22 +260,27 @@ class SPADEUNetGenerator(nn.Module):
         if self.use_alignment:
             self.alignment_net = AlignmentNetwork()
 
-    def encode(self, images):
+    def encode(self, images, h_channel=None):
         """Extract intermediate encoder features for PatchNCE loss.
 
         Args:
             images: [B, 3, H, H] in [-1, 1] (H&E or generated IHC)
+            h_channel: [B, 1, H, H] in [-1, 1] or None. If None, grayscale fallback.
 
         Returns:
             dict mapping layer index to feature tensor:
                 {1: [B, 64, 256, 256], 2: [B, 128, 128, 128],
                  3: [B, 256, 64, 64], 4: [B, 512, 32, 32]}
         """
+        if h_channel is None:
+            h_channel = images.mean(dim=1, keepdim=True)
+        encoder_input = torch.cat([images, h_channel], dim=1)  # [B, 4, H, H]
+
         if self.enc0 is not None:
-            e0 = self.enc0(images)
+            e0 = self.enc0(encoder_input)
             enc1_input = e0
         else:
-            enc1_input = images
+            enc1_input = encoder_input
 
         e1 = self.enc1(enc1_input)
         e2 = self.enc2(e1)
@@ -282,14 +288,16 @@ class SPADEUNetGenerator(nn.Module):
         e4 = self.enc4(e3)
         return {1: e1, 2: e2, 3: e3, 4: e4}
 
-    def forward(self, he_images, uni_features, labels, edge_input=None, he_h=None):
+    def forward(self, he_images, uni_features, labels, edge_input=None, he_h=None, h_channel=None):
         """
         Args:
             he_images:    [B, 3, H, H] in [-1, 1] where H=512 or H=1024
             uni_features: [B, N, 1024] where N=16 (4x4 CLS) or N=1024 (32x32 patch)
             labels:       [B] int class labels (0-4)
-            edge_input:   [B, 1, H, H] in [-1, 1] or None. Target H-channel structure.
-            he_h:         [B, 1, H, H] in [-1, 1] or None. Source H&E H-channel. Used for alignment.
+            edge_input:   [B, 1, H, H] in [-1, 1] or None. Target H-channel for edge encoder.
+            he_h:         [B, 1, H, H] in [-1, 1] or None. Source H&E H-channel for alignment.
+            h_channel:    [B, 1, H, H] in [-1, 1] or None. H-channel concatenated to encoder input.
+                          If None, grayscale of he_images is used as fallback.
 
         Returns:
             output: [B, 3, H, H] in [-1, 1]
@@ -316,13 +324,18 @@ class SPADEUNetGenerator(nn.Module):
         else:
             edge_maps = None
 
+        # Build 4-channel encoder input: [B, 4, H, H]
+        if h_channel is None:
+            h_channel = he_images.mean(dim=1, keepdim=True)
+        encoder_input = torch.cat([he_images, h_channel], dim=1)  # [B, 4, H, H]
+
         # === 1024: extra encoder level ===
         if self.enc0 is not None:
-            e0 = self.enc0(he_images)   # [B, 32, 512, 512]
+            e0 = self.enc0(encoder_input)   # [B, 32, 512, 512]
             enc1_input = e0
         else:
             e0 = None
-            enc1_input = he_images
+            enc1_input = encoder_input
 
         # Encoder
         e1 = self.enc1(enc1_input)  # [B, 64, 256, 256]

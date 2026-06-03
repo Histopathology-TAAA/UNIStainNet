@@ -49,6 +49,9 @@ def main():
                         help='Weight for the UNI perceptual feature loss (only active when Case A is running). Default: 0.0')
     parser.add_argument('--learnable_sobel', action='store_true',
                         help='Enable making the Sobel kernels in edge encoder learnable parameters.')
+    parser.add_argument('--he_rgb_dropout', type=float, default=0.0,
+                        help='Probability of zeroing out RGB H&E channels during training '
+                             '(forces model to rely on H-channel). Default: 0.0 (disabled)')
     args = parser.parse_args()
 
     print("=" * 70)
@@ -112,6 +115,8 @@ def main():
         # Spatial Alignment Network (STN)
         use_alignment=args.use_alignment,
         learnable_sobel=args.learnable_sobel,
+        # RGB dropout
+        he_rgb_dropout=args.he_rgb_dropout,
     )
 
     dm = MISTMultiStainCropDataModule(
