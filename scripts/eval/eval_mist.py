@@ -290,7 +290,7 @@ def main():
     print("MACRO-AVERAGED RESULTS")
     print(f"{'='*70}")
 
-    metric_keys = ['fid_inception', 'kid_mean_x1000', 'lpips_mean', 'lpips_128_mean',
+    metric_keys = ['fid_inception', 'fid_uni', 'kid_mean_x1000', 'lpips_mean', 'lpips_128_mean',
                     'ssim_mean', 'psnr_mean']
     dab_keys = ['dab_mae_overall', 'dab_pearson_r', 'dab_kl', 'dab_jsd']
     iod_keys = ['miod_diff', 'miod_abs_diff']
@@ -330,11 +330,11 @@ def main():
     for key in metric_keys + dab_keys + iod_keys + he_struct_keys:
         row = f"{key:<20s}"
         for s in args.stains:
-            if key in ['fid_inception', 'kid_mean_x1000']:
+            if key in metric_keys:
                 src = 'image_quality'
-            elif key.startswith('dab'):
+            elif key in dab_keys:
                 src = 'dab'
-            elif key.startswith('miod'):
+            elif key in iod_keys:
                 src = 'iod'
             else:
                 src = 'he_structure'
