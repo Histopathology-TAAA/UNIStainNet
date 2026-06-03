@@ -100,7 +100,7 @@ def extract_features_for_crop(uni_model, he_crop_01, spatial_pool_size=32):
 
 @torch.no_grad()
 def generate_for_stain(model, uni_model, dataloader, stain_label, guidance_scale=1.0, seed=42,
-                       spatial_pool_size=32):
+                       spatial_pool_size=32, no_downcasting=False):
     """Generate IHC images for a specific stain."""
     all_gen, all_real, all_he, all_fnames = [], [], [], []
 
@@ -111,18 +111,25 @@ def generate_for_stain(model, uni_model, dataloader, stain_label, guidance_scale
         # Override labels with stain label
         stain_labels = torch.full((he.size(0),), stain_label, device='cuda', dtype=torch.long)
 
-        # Extract UNI features
-        he_01 = ((he + 1) / 2).clamp(0, 1)
-        uni = extract_features_for_crop(uni_model, he_01,
-                                        spatial_pool_size=spatial_pool_size).cuda()
+        with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+            # Extract UNI features
+            he_01 = ((he + 1) / 2).clamp(0, 1)
+            uni = extract_features_for_crop(uni_model, he_01,
+                                            spatial_pool_size=spatial_pool_size).cuda()
 
-        gen = model.generate(he, uni, stain_labels,
-                             guidance_scale=guidance_scale,
-                             seed=seed + batch_idx)
+            gen = model.generate(he, uni, stain_labels,
+                                 guidance_scale=guidance_scale,
+                                 seed=seed + batch_idx)
+            gen = gen.float()
 
-        all_gen.append(gen.cpu().to(torch.float16))
-        all_real.append(her2.cpu().to(torch.float16))
-        all_he.append(he.cpu().to(torch.float16))
+        if no_downcasting:
+            all_gen.append(gen.cpu())
+            all_real.append(her2.cpu())
+            all_he.append(he.cpu())
+        else:
+            all_gen.append(gen.cpu().to(torch.float16))
+            all_real.append(her2.cpu().to(torch.float16))
+            all_he.append(he.cpu().to(torch.float16))
         all_fnames.extend(fnames)
 
     return torch.cat(all_gen), torch.cat(all_real), torch.cat(all_he), all_fnames
@@ -228,13 +235,13 @@ def main():
 
         # HE-H SSIM and HE-NMI metrics
         print(f"  Computing HE-H SSIM and HE-NMI...")
-        he_h_ssim = compute_he_h_ssim(gen, real, dab_extractor=dab_extractor)
-        he_nmi = compute_he_nmi(gen, real, dab_extractor=dab_extractor)
+        he_h_ssim = compute_he_h_ssim(gen, he, is_target_he=True, dab_extractor=dab_extractor)
+        he_nmi = compute_he_nmi(gen, he, is_target_he=True, dab_extractor=dab_extractor)
         stain_results['he_structure'] = {
-            'he_h_ssim_mean': he_h_ssim['he_h_ssim_mean'],
-            'he_h_ssim_std': he_h_ssim['he_h_ssim_std'],
-            'he_nmi_mean': he_nmi['he_nmi_mean'],
-            'he_nmi_std': he_nmi['he_nmi_std'],
+            'he_h_ssim_mean': he_h_ssim['ssim_mean'],
+            'he_h_ssim_std': he_h_ssim['ssim_std'],
+            'he_nmi_mean': he_nmi['nmi_mean'],
+            'he_nmi_std': he_nmi['nmi_std'],
         }
 
         # UNI-FID (per-stain)
@@ -273,7 +280,7 @@ def main():
     print("MACRO-AVERAGED RESULTS")
     print(f"{'='*70}")
 
-    metric_keys = ['fid_inception', 'kid_mean_x1000', 'lpips_mean', 'lpips_128_mean',
+    metric_keys = ['fid_inception', 'fid_uni', 'kid_mean_x1000', 'lpips_mean', 'lpips_128_mean',
                     'ssim_mean', 'psnr_mean']
     dab_keys = ['dab_mae_overall', 'dab_pearson_r', 'dab_kl', 'dab_jsd']
     iod_keys = ['miod_diff', 'miod_abs_diff']
@@ -313,7 +320,7 @@ def main():
     for key in metric_keys + dab_keys + iod_keys + he_struct_keys:
         row = f"{key:<20s}"
         for s in args.stains:
-            if key in ['fid_inception', 'kid_mean_x1000']:
+            if key in ['fid_inception', 'fid_uni', 'kid_mean_x1000', 'lpips_mean', 'lpips_128_mean', 'ssim_mean', 'psnr_mean']:
                 src = 'image_quality'
             elif key.startswith('dab'):
                 src = 'dab'
