@@ -216,7 +216,7 @@ def main():
         gen, real, he, target_h, fnames = generate_for_stain(
             model, uni_model, test_loader, stain,
             guidance_scale=args.guidance_scale,
-            seed=args.seed,
+            seed=42,
             no_downcasting=args.no_downcasting,
             aligned=args.aligned,
             spatial_pool_size=spatial_pool_size)

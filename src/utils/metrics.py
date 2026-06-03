@@ -620,7 +620,7 @@ def compute_he_h_ssim(generated, target_h_map, dab_extractor=None):
     ssim_metric = StructuralSimilarityIndexMeasure(data_range=1.0)
     ssim_vals = []
     for i in range(0, len(h_gen), 16):
-        batch_val = ssim_metric(h_gen_1ch[i:i+16], h_real_1ch[i:i+16])
+        batch_val = ssim_metric(h_gen_1ch[i:i+16], h_target_1ch[i:i+16])
         ssim_vals.append(batch_val.item())
 
     results['he_h_ssim_mean'] = float(np.mean(ssim_vals))
