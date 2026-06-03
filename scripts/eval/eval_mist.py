@@ -88,7 +88,7 @@ def generate_for_stain(model, uni_model, dataloader, target_stain,
                        guidance_scale=1.0, seed=42, no_downcasting=False,
                        aligned=False, spatial_pool_size=32):
     """Generate IHC images for a specific stain."""
-    all_gen, all_real, all_he, all_target_h, all_fnames = [], [], [], [], []
+    all_gen, all_real, all_he, all_fnames = [], [], [], []
 
     for batch_idx, batch in enumerate(tqdm(dataloader, desc=f"Generating")):
         he, her2, he_h, ihc_h, uni_sub_crops, labels, fnames = batch
@@ -120,15 +120,13 @@ def generate_for_stain(model, uni_model, dataloader, target_stain,
             all_gen.append(gen.cpu())
             all_real.append(her2.cpu())
             all_he.append(he.cpu())
-            all_target_h.append(edge_input.cpu())
         else:
             all_gen.append(gen.cpu().to(torch.float16))
             all_real.append(her2.cpu().to(torch.float16))
             all_he.append(he.cpu().to(torch.float16))
-            all_target_h.append(edge_input.cpu().to(torch.float16))
         all_fnames.extend(fnames)
 
-    return torch.cat(all_gen), torch.cat(all_real), torch.cat(all_he), torch.cat(all_target_h), all_fnames
+    return torch.cat(all_gen), torch.cat(all_real), torch.cat(all_he), all_fnames
 
 
 def main():
@@ -213,7 +211,7 @@ def main():
         test_loader = dm.val_dataloader()
 
         # Run generation
-        gen, real, he, target_h, fnames = generate_for_stain(
+        gen, real, he, fnames = generate_for_stain(
             model, uni_model, test_loader, stain,
             guidance_scale=args.guidance_scale,
             seed=42,
@@ -245,11 +243,13 @@ def main():
         stain_results['iod'] = compute_iod_metrics(gen, real, labels=None)
 
         # H-Channel Structure Metrics (dynamic target based on alignment)
+        struct_target = real if args.aligned else he
+        is_target_he = not args.aligned
         prefix = 'ihc' if args.aligned else 'he'
 
         print(f"  Computing {prefix.upper()}-H SSIM and {prefix.upper()}-NMI...")
-        h_ssim = compute_he_h_ssim(gen, target_h, dab_extractor=dab_extractor)
-        h_nmi = compute_he_nmi(gen, target_h, dab_extractor=dab_extractor)
+        h_ssim = compute_he_h_ssim(gen, struct_target, is_target_he=is_target_he, dab_extractor=dab_extractor)
+        h_nmi = compute_he_nmi(gen, struct_target, is_target_he=is_target_he, dab_extractor=dab_extractor)
         stain_results['he_structure'] = {
             f'{prefix}_h_ssim_mean': h_ssim['he_h_ssim_mean'],
             f'{prefix}_h_ssim_std': h_ssim['he_h_ssim_std'],
@@ -281,7 +281,7 @@ def main():
               f"{prefix.upper()}-NMI={he_struct[f'{prefix}_nmi_mean']:.3f}")
 
         # Explicitly free memory before next stain
-        del gen, real, he, target_h, fnames
+        del gen, real, he, fnames
         del dm, test_loader
         import gc
         gc.collect()

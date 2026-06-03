@@ -582,15 +582,17 @@ def compute_downstream_metrics(generated, real, labels, train_ihc_dir):
 # H-map (Hematoxylin channel) structure metrics
 # ======================================================================
 
-def compute_he_h_ssim(generated, target_h_map, dab_extractor=None):
-    """Compute SSIM on Hematoxylin channel between generated and target H-map.
+def compute_he_h_ssim(generated, target_img, is_target_he=False, dab_extractor=None, he_extractor=None):
+    """Compute SSIM on Hematoxylin channel between generated and target image.
 
-    Measures structural preservation against a provided ground-truth H-map.
+    Measures structural preservation against a provided ground-truth RGB image.
 
     Args:
         generated: [N, 3, H, W] generated IHC in [-1, 1]
-        target_h_map: [N, 1, H, W] target structural mask
+        target_img: [N, 3, H, W] target structural RGB image (IHC or H&E)
+        is_target_he: True if target_img is H&E, False if IHC
         dab_extractor: DABExtractor instance (will create if None)
+        he_extractor: HEExtractor instance (will create if None and needed)
 
     Returns:
         dict with ssim_mean, ssim_std
@@ -599,14 +601,24 @@ def compute_he_h_ssim(generated, target_h_map, dab_extractor=None):
 
     if dab_extractor is None:
         dab_extractor = DABExtractor(device='cpu')
+    if is_target_he and he_extractor is None:
+        from src.utils.dab import HEExtractor
+        he_extractor = HEExtractor(device='cpu')
 
     # Extract H-maps from generated RGB
     h_gen_list = []
+    h_target_list = []
     for i in range(0, len(generated), 16):
         h_gen_list.append(dab_extractor.extract_hematoxylin_intensity(generated[i:i+16].float().cpu(), normalize="max"))
         
+        target_batch = target_img[i:i+16].float().cpu()
+        if is_target_he:
+            h_target_list.append(he_extractor.extract_hematoxylin_intensity(target_batch, normalize="max"))
+        else:
+            h_target_list.append(dab_extractor.extract_hematoxylin_intensity(target_batch, normalize="max"))
+        
     h_gen = torch.cat(h_gen_list)
-    h_target = target_h_map.squeeze(1).float().cpu()
+    h_target = torch.cat(h_target_list)
 
     # Ensure [0, 1] range
     h_gen = (h_gen - h_gen.min()) / (h_gen.max() - h_gen.min() + 1e-6)
@@ -629,8 +641,8 @@ def compute_he_h_ssim(generated, target_h_map, dab_extractor=None):
     return results
 
 
-def compute_he_nmi(generated, target_h_map, dab_extractor=None, n_bins=256):
-    """Compute Normalized Mutual Information (NMI) against target H-map.
+def compute_he_nmi(generated, target_img, is_target_he=False, dab_extractor=None, he_extractor=None, n_bins=256):
+    """Compute Normalized Mutual Information (NMI) against target image.
 
     NMI = (2 * MI(H_gen, H_real)) / (H(H_gen) + H(H_real))
     where H = entropy, MI = mutual information.
@@ -640,8 +652,10 @@ def compute_he_nmi(generated, target_h_map, dab_extractor=None, n_bins=256):
 
     Args:
         generated: [N, 3, H, W] generated IHC in [-1, 1]
-        target_h_map: [N, 1, H, W] target structural mask
+        target_img: [N, 3, H, W] target structural RGB image
+        is_target_he: True if target_img is H&E, False if IHC
         dab_extractor: DABExtractor instance (will create if None)
+        he_extractor: HEExtractor instance (will create if None and needed)
         n_bins: number of histogram bins for entropy estimation
 
     Returns:
@@ -649,14 +663,24 @@ def compute_he_nmi(generated, target_h_map, dab_extractor=None, n_bins=256):
     """
     if dab_extractor is None:
         dab_extractor = DABExtractor(device='cpu')
+    if is_target_he and he_extractor is None:
+        from src.utils.dab import HEExtractor
+        he_extractor = HEExtractor(device='cpu')
 
     # Extract H-maps from generated RGB
     h_gen_list = []
+    h_target_list = []
     for i in range(0, len(generated), 16):
         h_gen_list.append(dab_extractor.extract_hematoxylin_intensity(generated[i:i+16].float().cpu(), normalize="none"))
         
+        target_batch = target_img[i:i+16].float().cpu()
+        if is_target_he:
+            h_target_list.append(he_extractor.extract_hematoxylin_intensity(target_batch, normalize="none"))
+        else:
+            h_target_list.append(dab_extractor.extract_hematoxylin_intensity(target_batch, normalize="none"))
+        
     h_gen = torch.cat(h_gen_list)
-    h_target = target_h_map.squeeze(1).float().cpu()
+    h_target = torch.cat(h_target_list)
 
     nmi_vals = []
     for i in range(len(h_gen)):
