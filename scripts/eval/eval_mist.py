@@ -88,7 +88,7 @@ def generate_for_stain(model, uni_model, dataloader, target_stain,
                        guidance_scale=1.0, seed=42, no_downcasting=False,
                        aligned=False, spatial_pool_size=32):
     """Generate IHC images for a specific stain."""
-    all_gen, all_real, all_he, all_fnames = [], [], [], []
+    all_gen, all_real, all_he, all_target_h, all_fnames = [], [], [], [], []
 
     for batch_idx, batch in enumerate(tqdm(dataloader, desc=f"Generating")):
         he, her2, he_h, ihc_h, uni_sub_crops, labels, fnames = batch
@@ -120,13 +120,15 @@ def generate_for_stain(model, uni_model, dataloader, target_stain,
             all_gen.append(gen.cpu())
             all_real.append(her2.cpu())
             all_he.append(he.cpu())
+            all_target_h.append(edge_input.cpu())
         else:
             all_gen.append(gen.cpu().to(torch.float16))
             all_real.append(her2.cpu().to(torch.float16))
             all_he.append(he.cpu().to(torch.float16))
+            all_target_h.append(edge_input.cpu().to(torch.float16))
         all_fnames.extend(fnames)
 
-    return torch.cat(all_gen), torch.cat(all_real), torch.cat(all_he), all_fnames
+    return torch.cat(all_gen), torch.cat(all_real), torch.cat(all_he), torch.cat(all_target_h), all_fnames
 
 
 def main():
@@ -210,11 +212,11 @@ def main():
         dm.setup('test')
         test_loader = dm.val_dataloader()
 
-        # Generate
-        gen, real, he, fnames = generate_for_stain(
-            model, uni_model, test_loader, target_stain=stain,
+        # Run generation
+        gen, real, he, target_h, fnames = generate_for_stain(
+            model, uni_model, test_loader, stain,
             guidance_scale=args.guidance_scale,
-            seed=42,
+            seed=args.seed,
             no_downcasting=args.no_downcasting,
             aligned=args.aligned,
             spatial_pool_size=spatial_pool_size)
@@ -242,15 +244,17 @@ def main():
         print(f"  Computing IOD metrics...")
         stain_results['iod'] = compute_iod_metrics(gen, real, labels=None)
 
-        # HE-H SSIM and HE-NMI metrics
-        print(f"  Computing HE-H SSIM and HE-NMI...")
-        he_h_ssim = compute_he_h_ssim(gen, real, dab_extractor=dab_extractor)
-        he_nmi = compute_he_nmi(gen, real, dab_extractor=dab_extractor)
+        # H-Channel Structure Metrics (dynamic target based on alignment)
+        prefix = 'ihc' if args.aligned else 'he'
+
+        print(f"  Computing {prefix.upper()}-H SSIM and {prefix.upper()}-NMI...")
+        h_ssim = compute_he_h_ssim(gen, target_h, dab_extractor=dab_extractor)
+        h_nmi = compute_he_nmi(gen, target_h, dab_extractor=dab_extractor)
         stain_results['he_structure'] = {
-            'he_h_ssim_mean': he_h_ssim['he_h_ssim_mean'],
-            'he_h_ssim_std': he_h_ssim['he_h_ssim_std'],
-            'he_nmi_mean': he_nmi['he_nmi_mean'],
-            'he_nmi_std': he_nmi['he_nmi_std'],
+            f'{prefix}_h_ssim_mean': h_ssim['he_h_ssim_mean'],
+            f'{prefix}_h_ssim_std': h_ssim['he_h_ssim_std'],
+            f'{prefix}_nmi_mean': h_nmi['he_nmi_mean'],
+            f'{prefix}_nmi_std': h_nmi['he_nmi_std'],
         }
 
         # UNI-FID (per-stain)
@@ -267,16 +271,17 @@ def main():
         iq = stain_results['image_quality']
         dab = stain_results['dab']
         he_struct = stain_results['he_structure']
+        prefix = 'ihc' if args.aligned else 'he'
         print(f"\n  {stain}: FID={iq['fid_inception']:.1f} | "
               f"KID={iq['kid_mean_x1000']:.1f} | "
               f"LPIPS={iq['lpips_mean']:.3f} | "
               f"SSIM={iq['ssim_mean']:.3f} | "
               f"Pearson-r={dab.get('dab_pearson_r', 0):.3f} | "
-              f"HE-H-SSIM={he_struct['he_h_ssim_mean']:.3f} | "
-              f"HE-NMI={he_struct['he_nmi_mean']:.3f}")
+              f"{prefix.upper()}-H-SSIM={he_struct[f'{prefix}_h_ssim_mean']:.3f} | "
+              f"{prefix.upper()}-NMI={he_struct[f'{prefix}_nmi_mean']:.3f}")
 
         # Explicitly free memory before next stain
-        del gen, real, he, fnames
+        del gen, real, he, target_h, fnames
         del dm, test_loader
         import gc
         gc.collect()
@@ -294,7 +299,8 @@ def main():
                     'ssim_mean', 'psnr_mean']
     dab_keys = ['dab_mae_overall', 'dab_pearson_r', 'dab_kl', 'dab_jsd']
     iod_keys = ['miod_diff', 'miod_abs_diff']
-    he_struct_keys = ['he_h_ssim_mean', 'he_nmi_mean']
+    prefix = 'ihc' if args.aligned else 'he'
+    he_struct_keys = [f'{prefix}_h_ssim_mean', f'{prefix}_nmi_mean']
 
     macro = {}
     for key in metric_keys:

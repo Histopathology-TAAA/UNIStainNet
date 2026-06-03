@@ -582,15 +582,14 @@ def compute_downstream_metrics(generated, real, labels, train_ihc_dir):
 # H-map (Hematoxylin channel) structure metrics
 # ======================================================================
 
-def compute_he_h_ssim(generated, real, dab_extractor=None):
-    """Compute SSIM on Hematoxylin channel between generated and real IHC.
+def compute_he_h_ssim(generated, target_h_map, dab_extractor=None):
+    """Compute SSIM on Hematoxylin channel between generated and target H-map.
 
-    Measures structural preservation: how well the generated image matches the
-    real IHC tissue structure (nuclei, glands, etc.) at the H-channel level.
+    Measures structural preservation against a provided ground-truth H-map.
 
     Args:
         generated: [N, 3, H, W] generated IHC in [-1, 1]
-        real: [N, 3, H, W] real IHC in [-1, 1]
+        target_h_map: [N, 1, H, W] target structural mask
         dab_extractor: DABExtractor instance (will create if None)
 
     Returns:
@@ -601,22 +600,21 @@ def compute_he_h_ssim(generated, real, dab_extractor=None):
     if dab_extractor is None:
         dab_extractor = DABExtractor(device='cpu')
 
-    # Extract H-maps (normalize to [0, 1] for SSIM)
-    h_gen_list, h_real_list = [], []
+    # Extract H-maps from generated RGB
+    h_gen_list = []
     for i in range(0, len(generated), 16):
         h_gen_list.append(dab_extractor.extract_hematoxylin_intensity(generated[i:i+16].float().cpu(), normalize="max"))
-        h_real_list.append(dab_extractor.extract_hematoxylin_intensity(real[i:i+16].float().cpu(), normalize="max"))
         
     h_gen = torch.cat(h_gen_list)
-    h_real = torch.cat(h_real_list)
+    h_target = target_h_map.squeeze(1).float().cpu()
 
     # Ensure [0, 1] range
     h_gen = (h_gen - h_gen.min()) / (h_gen.max() - h_gen.min() + 1e-6)
-    h_real = (h_real - h_real.min()) / (h_real.max() - h_real.min() + 1e-6)
+    h_target = (h_target - h_target.min()) / (h_target.max() - h_target.min() + 1e-6)
 
     # Stack to [N, 1, H, W] for SSIM
     h_gen_1ch = h_gen.unsqueeze(1)
-    h_real_1ch = h_real.unsqueeze(1)
+    h_target_1ch = h_target.unsqueeze(1)
 
     results = {}
     ssim_metric = StructuralSimilarityIndexMeasure(data_range=1.0)
@@ -631,18 +629,18 @@ def compute_he_h_ssim(generated, real, dab_extractor=None):
     return results
 
 
-def compute_he_nmi(generated, real, dab_extractor=None, n_bins=256):
-    """Compute Normalized Mutual Information (NMI) on H-maps.
+def compute_he_nmi(generated, target_h_map, dab_extractor=None, n_bins=256):
+    """Compute Normalized Mutual Information (NMI) against target H-map.
 
     NMI = (2 * MI(H_gen, H_real)) / (H(H_gen) + H(H_real))
     where H = entropy, MI = mutual information.
 
-    Measures information overlap / alignment between generated and real H-channel.
+    Measures information overlap / alignment between generated and target H-channel.
     Range: [0, 1]. Higher = better alignment.
 
     Args:
         generated: [N, 3, H, W] generated IHC in [-1, 1]
-        real: [N, 3, H, W] real IHC in [-1, 1]
+        target_h_map: [N, 1, H, W] target structural mask
         dab_extractor: DABExtractor instance (will create if None)
         n_bins: number of histogram bins for entropy estimation
 
@@ -652,19 +650,18 @@ def compute_he_nmi(generated, real, dab_extractor=None, n_bins=256):
     if dab_extractor is None:
         dab_extractor = DABExtractor(device='cpu')
 
-    # Extract H-maps [N, H, W] and flatten per image
-    h_gen_list, h_real_list = [], []
+    # Extract H-maps from generated RGB
+    h_gen_list = []
     for i in range(0, len(generated), 16):
         h_gen_list.append(dab_extractor.extract_hematoxylin_intensity(generated[i:i+16].float().cpu(), normalize="none"))
-        h_real_list.append(dab_extractor.extract_hematoxylin_intensity(real[i:i+16].float().cpu(), normalize="none"))
         
     h_gen = torch.cat(h_gen_list)
-    h_real = torch.cat(h_real_list)
+    h_target = target_h_map.squeeze(1).float().cpu()
 
     nmi_vals = []
     for i in range(len(h_gen)):
         h_g = h_gen[i].flatten().numpy()
-        h_r = h_real[i].flatten().numpy()
+        h_r = h_target[i].flatten().numpy()
 
         # Normalize to [0, 1] for consistent histogram binning
         h_g_norm = (h_g - h_g.min()) / (h_g.max() - h_g.min() + 1e-6)
