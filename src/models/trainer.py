@@ -386,6 +386,31 @@ class UNIStainNetTrainer(pl.LightningModule):
             tgt_scores = _batched_top10_mean(dab_tgt)
             return F.l1_loss(gen_scores, tgt_scores)
 
+    def compute_dab_wasserstein_loss(self, generated, target):
+        """1D Sorted Wasserstein loss to match DAB intensity distributions perfectly.
+        
+        Since this matches the exact sorted histogram, it should only be used 
+        when the structures are perfectly aligned (Case A).
+        """
+        with torch.amp.autocast('cuda', enabled=False):
+            gen = generated.float()
+            tgt = target.float()
+
+            dab_gen = self.dab_extractor.extract_dab_intensity(gen, normalize="none")
+            dab_tgt = self.dab_extractor.extract_dab_intensity(tgt, normalize="none")
+
+            # Flatten spatial dimensions: [B, H*W]
+            B = dab_gen.shape[0]
+            gen_flat = dab_gen.reshape(B, -1)
+            tgt_flat = dab_tgt.reshape(B, -1)
+
+            # Sort both distributions
+            gen_sorted = torch.sort(gen_flat, dim=1)[0]
+            tgt_sorted = torch.sort(tgt_flat, dim=1)[0]
+
+            # L1 distance between sorted quantiles is equivalent to 1D Wasserstein distance
+            return F.l1_loss(gen_sorted, tgt_sorted)
+
     def compute_dab_contrast_loss(self, generated, labels):
         """Class-ordering hinge loss: DAB(3+) > DAB(2+) > DAB(1+) > DAB(0)."""
         with torch.amp.autocast('cuda', enabled=False):
@@ -715,6 +740,13 @@ class UNIStainNetTrainer(pl.LightningModule):
             loss_dab = self.compute_dab_intensity_loss(generated, her2)
             loss_g = loss_g + self.hparams.dab_intensity_weight * loss_dab
             self.log('train/dab_intensity', loss_dab, prog_bar=False)
+
+        # DAB Histogram (Wasserstein) loss - ONLY apply in Case A (when structures perfectly match)
+        dab_wasserstein_weight = getattr(self.hparams, 'dab_wasserstein_weight', 0.0)
+        if use_case_a and dab_wasserstein_weight > 0:
+            loss_dab_wass = self.compute_dab_wasserstein_loss(generated, her2)
+            loss_g = loss_g + dab_wasserstein_weight * loss_dab_wass
+            self.log('train/dab_wasserstein', loss_dab_wass, prog_bar=False)
 
         if self.hparams.dab_contrast_weight > 0:
             loss_dab_contrast = self.compute_dab_contrast_loss(generated, labels)

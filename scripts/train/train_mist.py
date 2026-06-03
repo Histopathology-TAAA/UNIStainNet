@@ -51,6 +51,8 @@ def main():
                         help='Weight for the K-Stain VGG perceptual loss. Default: 0.0')
     parser.add_argument('--learnable_sobel', action='store_true',
                         help='Enable making the Sobel kernels in edge encoder learnable parameters.')
+    parser.add_argument('--dab_wasserstein_weight', type=float, default=1.0,
+                        help="Weight for 1D sorted Wasserstein DAB loss (applied in Case A only).")
     args = parser.parse_args()
 
     print("=" * 70)
@@ -85,8 +87,9 @@ def main():
         he_edge_weight=0.5,
         l1_lowres_weight=1.0,
         adversarial_weight=0.0,
-        uncond_disc_weight=1.0,
+        uncond_disc_weight=1.5,
         dab_intensity_weight=0.2,
+        dab_wasserstein_weight=args.dab_wasserstein_weight,
         dab_contrast_weight=0.0,    # No class ordering across stains
         dab_sharpness_weight=0.0,
         gram_style_weight=0.0,
