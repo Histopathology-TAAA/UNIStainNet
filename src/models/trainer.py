@@ -85,6 +85,7 @@ class UNIStainNetTrainer(pl.LightningModule):
         patchnce_temperature=0.07,
         uni_perceptual_weight=0.0,
         kstain_perceptual_weight=0.0,
+        dab_wasserstein_weight=0.0,
         # Ablation
         disable_uni=False,
         disable_class=False,
