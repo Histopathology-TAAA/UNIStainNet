@@ -150,7 +150,11 @@ def main():
     parser.add_argument('--no_downcasting', action='store_true', help='Disable float16 downcasting for metric accuracy')
     parser.add_argument('--enable_stn_alignment', action='store_true', help='Enable STN alignment during evaluation (disabled by default)')
     parser.add_argument('--aligned', action='store_true', help='Evaluate on the aligned case using IHC ground-truth structure.')
+    parser.add_argument('--random_seed', action='store_true', help='Use a random seed instead of fixed seed 42')
     args = parser.parse_args()
+
+    if not args.random_seed:
+        pl.seed_everything(42, workers=True)
 
     if args.output_dir is None:
         ckpt_name = Path(args.checkpoint).stem
@@ -172,10 +176,15 @@ def main():
     # By default, bypassing the STN entirely guarantees 100% structural fidelity 
     # to the input H&E and prevents interpolation blur from degrading the SSIM/NMI metrics.
     # However, it can be enabled via the --enable_stn_alignment flag.
-    if hasattr(model.generator, 'use_alignment'):
-        model.generator.use_alignment = args.enable_stn_alignment
-    if hasattr(model, 'generator_ema') and hasattr(model.generator_ema, 'use_alignment'):
-        model.generator_ema.use_alignment = args.enable_stn_alignment
+    if args.enable_stn_alignment:
+        if not hasattr(model.generator, 'alignment_net'):
+            print("WARNING: --enable_stn_alignment was passed, but this checkpoint was NOT trained with STN alignment.")
+            print("STN evaluation will be skipped for this run.")
+        else:
+            if hasattr(model.generator, 'use_alignment'):
+                model.generator.use_alignment = True
+            if hasattr(model, 'generator_ema') and hasattr(model.generator_ema, 'use_alignment'):
+                model.generator_ema.use_alignment = True
 
     # Read spatial size from checkpoint hparams (default 32 for backward compat)
     spatial_pool_size = getattr(model.hparams, 'uni_spatial_size', 32)
@@ -220,6 +229,7 @@ def main():
         gen, real, he, fnames = generate_for_stain(
             model, uni_model, test_loader, stain_label,
             guidance_scale=args.guidance_scale,
+            seed=None if args.random_seed else 42,
             spatial_pool_size=spatial_pool_size,
             no_downcasting=args.no_downcasting,
             aligned=args.aligned)

@@ -345,7 +345,7 @@ class SPADEUNetGenerator(nn.Module):
         e5 = self.enc5(e4)          # [B, 512, 16, 16]
 
         # Alignment Network (STN) Feature Warping
-        if self.use_alignment and he_h is not None and edge_input is not None:
+        if self.use_alignment and hasattr(self, 'alignment_net') and he_h is not None and edge_input is not None:
             # Predict flow from he_h (source) to edge_input (target ihc_h or he_h)
             flow_field, confidence_mask = self.alignment_net(he_h, edge_input)
             
