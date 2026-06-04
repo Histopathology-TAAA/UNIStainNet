@@ -54,6 +54,12 @@ def main():
                         help='Resume from checkpoint path')
     parser.add_argument('--image_size', type=int, default=512,
                         help='Training resolution (512 or 1024)')
+    parser.add_argument('--devices', type=int, default=1,
+                        help='Number of GPUs (default: 1)')
+    parser.add_argument('--num_workers', type=int, default=4,
+                        help='DataLoader workers per GPU (default: 4)')
+    parser.add_argument('--strategy', type=str, default='auto',
+                        help='Distributed strategy: auto, ddp, ddp_find_unused_parameters_true, etc.')
     args = parser.parse_args()
 
     image_sz = (args.image_size, args.image_size)
@@ -66,6 +72,7 @@ def main():
     print(f"  Train pts:  {args.train_patients}")
     print(f"  Val pts:    {args.val_patients}")
     print(f"  Resolution: {args.image_size}×{args.image_size}")
+    print(f"  Devices:    {args.devices} | Strategy: {args.strategy}")
     print("=" * 70)
 
     # Paper hyperparameters
@@ -104,7 +111,7 @@ def main():
         # GAN training
         r1_weight=10.0,
         r1_every=16,
-        adversarial_start_step=2000,
+        adversarial_start_step=1000,
         # CFG dropout
         cfg_drop_class_prob=0.10,
         cfg_drop_uni_prob=0.10,
@@ -122,7 +129,7 @@ def main():
         val_patients=args.val_patients,
         stains=args.stains,
         batch_size=args.batch_size,
-        num_workers=4,
+        num_workers=args.num_workers,
         image_size=image_sz,
         crop_size=crop_sz,
         null_class=4,
@@ -148,8 +155,9 @@ def main():
     trainer = pl.Trainer(
         max_epochs=args.max_epochs,
         accelerator='gpu',
-        devices=1,
-        precision='bf16',
+        devices=args.devices,
+        strategy=args.strategy,
+        precision='32',
         callbacks=[ckpt_callback, lr_monitor],
         logger=wandb_logger,
         log_every_n_steps=10,

@@ -1,0 +1,32 @@
+[project]
+name = "unistainnet"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = "==3.12.*"
+dependencies = [
+    "lpips",
+    "numpy>=1.24",
+    "pillow",
+    "pytorch-lightning",
+    "scikit-learn",
+    "scipy",
+    "timm",
+    "torch==2.5.0",
+    "torchmetrics",
+    "torchvision==0.20.0",
+    "tqdm",
+    "wandb",
+    "h5py",
+    "torch-fidelity",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages]
+find = {}
+
+[tool.uv]
+extra-index-url = ["https://download.pytorch.org/whl/cu121"]
