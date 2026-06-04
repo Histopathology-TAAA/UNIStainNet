@@ -28,6 +28,7 @@ import torch.nn.functional as F
 import timm
 import torchvision.transforms as transforms
 import numpy as np
+import pytorch_lightning as pl
 from tqdm import tqdm
 
 from src.models.trainer import UNIStainNetTrainer
