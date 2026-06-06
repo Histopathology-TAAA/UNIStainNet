@@ -696,15 +696,15 @@ class UNIStainNetTrainer(pl.LightningModule):
             elif ihc_aug_prob > 0.0 and torch.rand(1).item() < ihc_aug_prob:
                 # Randomly apply either heavy Gaussian Blur or Gaussian Noise
                 if torch.rand(1).item() < 0.5:
-                # Gaussian Blur (kernel size 7 or 9)
-                import torchvision.transforms.functional as TF
-                kernel_size = 9 if torch.rand(1).item() < 0.5 else 7
-                sigma = torch.rand(1).item() * 1.5 + 0.5  # 0.5 to 2.0
-                ihc_h = TF.gaussian_blur(ihc_h, kernel_size=[kernel_size, kernel_size], sigma=[sigma, sigma])
-            else:
-                # Gaussian Noise
-                noise = torch.randn_like(ihc_h) * 0.15  # std=0.15 on [-1, 1] range
-                ihc_h = (ihc_h + noise).clamp(-1, 1)
+                    # Gaussian Blur (kernel size 7 or 9)
+                    import torchvision.transforms.functional as TF
+                    kernel_size = 9 if torch.rand(1).item() < 0.5 else 7
+                    sigma = torch.rand(1).item() * 1.5 + 0.5  # 0.5 to 2.0
+                    ihc_h = TF.gaussian_blur(ihc_h, kernel_size=[kernel_size, kernel_size], sigma=[sigma, sigma])
+                else:
+                    # Gaussian Noise
+                    noise = torch.randn_like(ihc_h) * 0.15  # std=0.15 on [-1, 1] range
+                    ihc_h = (ihc_h + noise).clamp(-1, 1)
         # edge_input: [B, 1, H, W] passed to edge encoder
         edge_input = ihc_h if use_case_a else he_h
         # h_channel: [B, 1, H, W] concatenated to main encoder input (4th channel)
