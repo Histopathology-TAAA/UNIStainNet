@@ -55,6 +55,9 @@ def main():
     parser.add_argument('--ihc_augmentation', type=float, default=0.0,
                         help='Probability of applying random blur/noise to IHC H-channel during Case A '
                              'to destroy DAB ghosts (range 0.0 to 1.0). Default: 0.0 (disabled)')
+    parser.add_argument('--bilateral', type=float, default=0.0,
+                        help='Probability of applying Bilateral Filter to IHC H-channel during Case A '
+                             'to destroy DAB ghosts while preserving edges (range 0.0 to 1.0). Default: 0.0 (disabled)')
     args = parser.parse_args()
 
     print("=" * 70)
@@ -122,6 +125,7 @@ def main():
         he_rgb_dropout=args.he_rgb_dropout,
         # IHC Augmentation to prevent DAB leakage
         ihc_augmentation=args.ihc_augmentation,
+        bilateral_prob=args.bilateral,
     )
 
     dm = MISTMultiStainCropDataModule(

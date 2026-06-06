@@ -37,6 +37,48 @@ from src.utils.dab import DABExtractor
 # Training Module
 # ======================================================================
 
+def _batched_bilateral_filter(x, spatial_sigma=2.0, color_sigma=0.15, kernel_size=7):
+    """Simple batched bilateral filter for 2D images in PyTorch.
+    Preserves edges while smoothing the image.
+    """
+    B, C, H, W = x.shape
+    device = x.device
+    pad = kernel_size // 2
+    
+    # Create spatial gaussian weights
+    coords = torch.arange(-pad, pad + 1, dtype=torch.float32, device=device)
+    y, x_coords = torch.meshgrid(coords, coords, indexing='ij')
+    spatial_dist = (y**2 + x_coords**2)
+    spatial_weights = torch.exp(-spatial_dist / (2 * spatial_sigma**2))
+    spatial_weights = spatial_weights.view(1, 1, kernel_size * kernel_size, 1, 1)
+    
+    # Pad image
+    x_pad = F.pad(x, (pad, pad, pad, pad), mode='reflect')
+    
+    # Unfold to get local patches
+    # [B, C*K*K, H, W]
+    patches = F.unfold(x_pad, kernel_size=kernel_size)
+    patches = patches.view(B, C, kernel_size * kernel_size, H, W)
+    
+    # Center pixel
+    center = x.view(B, C, 1, H, W)
+    
+    # Color distance
+    color_dist = (patches - center)**2
+    color_weights = torch.exp(-color_dist / (2 * color_sigma**2))
+    
+    # Combine weights
+    weights = spatial_weights * color_weights
+    
+    # Normalize weights
+    weights_sum = weights.sum(dim=2, keepdim=True) + 1e-8
+    weights = weights / weights_sum
+    
+    # Apply weights
+    out = (patches * weights).sum(dim=2)
+    return out
+
+
 class UNIStainNetTrainer(pl.LightningModule):
     """PyTorch Lightning training module for UNIStainNet.
 
@@ -115,6 +157,8 @@ class UNIStainNetTrainer(pl.LightningModule):
         he_rgb_dropout=0.0,
         # Augmentation probability for IHC H-channel (Case A only) to prevent DAB ghost leakage
         ihc_augmentation=0.0,
+        # Bilateral filter probability for IHC H-channel (Case A only) to smooth DAB while preserving edges
+        bilateral_prob=0.0,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -643,9 +687,15 @@ class UNIStainNetTrainer(pl.LightningModule):
                       
         # Apply augmentation to IHC H-channel to destroy DAB ghosting
         ihc_aug_prob = getattr(self.hparams, 'ihc_augmentation', 0.0)
-        if use_case_a and ihc_aug_prob > 0.0 and torch.rand(1).item() < ihc_aug_prob:
-            # Randomly apply either heavy Gaussian Blur or Gaussian Noise
-            if torch.rand(1).item() < 0.5:
+        bilateral_prob = getattr(self.hparams, 'bilateral_prob', 0.0)
+        
+        if use_case_a:
+            if bilateral_prob > 0.0 and torch.rand(1).item() < bilateral_prob:
+                # Bilateral filter preserves edges while smoothing the DAB ghosting
+                ihc_h = _batched_bilateral_filter(ihc_h, spatial_sigma=2.0, color_sigma=0.15, kernel_size=7)
+            elif ihc_aug_prob > 0.0 and torch.rand(1).item() < ihc_aug_prob:
+                # Randomly apply either heavy Gaussian Blur or Gaussian Noise
+                if torch.rand(1).item() < 0.5:
                 # Gaussian Blur (kernel size 7 or 9)
                 import torchvision.transforms.functional as TF
                 kernel_size = 9 if torch.rand(1).item() < 0.5 else 7
