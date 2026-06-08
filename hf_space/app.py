@@ -74,9 +74,9 @@ def _load_models():
         _model_cache["spatial_pool_size"] = getattr(model.hparams, "uni_spatial_size", 32)
 
         print("Loading CONCH ViT-B/16 ...")
-        uni_model = timm.create_model(
-            "hf_hub:MahmoodLab/CONCH", pretrained=True,
-        )
+        from conch.open_clip_custom import create_model_from_pretrained
+        model, _ = create_model_from_pretrained('conch_ViT-B-16', checkpoint_path="hf_hub:MahmoodLab/CONCH")
+        uni_model = model.visual.trunk
         uni_model = uni_model.cuda().eval()
         _model_cache["uni_model"] = uni_model
         print("  Models loaded")

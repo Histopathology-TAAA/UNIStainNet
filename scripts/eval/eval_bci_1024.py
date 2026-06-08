@@ -44,7 +44,9 @@ from src.utils.metrics import (
 
 def load_uni_model():
     """Load CONCH ViT-B/16 for on-the-fly feature extraction during eval."""
-    model = timm.create_model("hf_hub:MahmoodLab/CONCH", pretrained=True)
+    from conch.open_clip_custom import create_model_from_pretrained
+    model, _ = create_model_from_pretrained('conch_ViT-B-16', checkpoint_path="hf_hub:MahmoodLab/CONCH")
+    model = model.visual.trunk.cuda().eval()
     model = model.cuda().eval()
     return model
 

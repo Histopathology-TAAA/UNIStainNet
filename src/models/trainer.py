@@ -243,10 +243,9 @@ class UNIStainNetTrainer(pl.LightningModule):
         """Lazily load CONCH ViT-B/16 for on-the-fly feature extraction."""
         if self._uni_model is None:
             import timm
-            self._uni_model = timm.create_model(
-                "hf_hub:MahmoodLab/CONCH",
-                pretrained=True,
-            )
+            from conch.open_clip_custom import create_model_from_pretrained
+            model, _ = create_model_from_pretrained('conch_ViT-B-16', checkpoint_path="hf_hub:MahmoodLab/CONCH")
+            self._uni_model = model.visual.trunk
             self._uni_model.eval()
             self._uni_model.requires_grad_(False)
             self._uni_model = self._uni_model.to(self.device)

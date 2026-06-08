@@ -161,7 +161,9 @@ def compute_uni_fid(generated, real):
     import torchvision.transforms as transforms
     from scipy.linalg import sqrtm
 
-    uni_model = timm.create_model("hf_hub:MahmoodLab/CONCH", pretrained=True)
+    from conch.open_clip_custom import create_model_from_pretrained
+    model, _ = create_model_from_pretrained('conch_ViT-B-16', checkpoint_path="hf_hub:MahmoodLab/CONCH")
+    uni_model = model.visual.trunk
     uni_model = uni_model.cuda().eval()
 
     transform = transforms.Compose([
@@ -400,7 +402,9 @@ def compute_downstream_metrics(generated, real, labels, train_ihc_dir):
 
     # Load CONCH model
     print("  Loading CONCH model for downstream evaluation...")
-    uni_model = timm.create_model("hf_hub:MahmoodLab/CONCH", pretrained=True)
+    from conch.open_clip_custom import create_model_from_pretrained
+    model, _ = create_model_from_pretrained('conch_ViT-B-16', checkpoint_path="hf_hub:MahmoodLab/CONCH")
+    uni_model = model.visual.trunk
     uni_model = uni_model.cuda().eval()
 
     uni_transform = transforms.Compose([
