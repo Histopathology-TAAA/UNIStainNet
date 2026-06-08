@@ -2,13 +2,13 @@
 UNIStainNet: Pixel-Space UNI-Guided Virtual Staining Network.
 
 Architecture:
-    Generator: SPADE-UNet conditioned on UNI pathology features + stain/class embedding
+    Generator: SPADE-UNet conditioned on CONCH pathology features + stain/class embedding
     Discriminator: Multi-scale PatchGAN (512 + 256)
     Losses: LPIPS@128 + adversarial + DAB intensity + DAB contrast
 
 References:
     - Park et al., "Semantic Image Synthesis with SPADE" (CVPR 2019)
-    - Chen et al., "A general-purpose self-supervised model for pathology" (Nature Medicine 2024)
+    - Lu et al., "A visual-language foundation model for computational pathology" (Nature Medicine 2024)
     - Isola et al., "Image-to-Image Translation with pix2pix" (CVPR 2017)
 """
 
@@ -49,7 +49,7 @@ class UNIStainNetTrainer(pl.LightningModule):
         num_classes=5,
         null_class=4,
         class_dim=64,
-        uni_dim=1024,
+        uni_dim=768,
         ndf=64,
         disc_n_layers=3,
         input_skip=False,
@@ -95,7 +95,7 @@ class UNIStainNetTrainer(pl.LightningModule):
         cfg_drop_both_prob=0.05,
         # EMA
         ema_decay=0.999,
-        # On-the-fly UNI extraction (for crop-based training)
+        # On-the-fly CONCH extraction (for crop-based training)
         extract_uni_on_the_fly=False,
         uni_spatial_pool_size=32,
         # Resolution
@@ -111,7 +111,7 @@ class UNIStainNetTrainer(pl.LightningModule):
 
         self.null_class = null_class
 
-        # On-the-fly UNI feature extraction (loaded lazily on first use)
+        # On-the-fly CONCH feature extraction (loaded lazily on first use)
         self._uni_model = None
         self._uni_extract_on_the_fly = extract_uni_on_the_fly
 
@@ -226,78 +226,77 @@ class UNIStainNetTrainer(pl.LightningModule):
             p_ema.data.mul_(decay).add_(p.data, alpha=1 - decay)
 
     def on_save_checkpoint(self, checkpoint):
-        """Exclude frozen UNI model from checkpoint (it's reloaded on-the-fly)."""
+        """Exclude frozen CONCH model from checkpoint (it's reloaded on-the-fly)."""
         state_dict = checkpoint.get('state_dict', {})
         keys_to_remove = [k for k in state_dict if k.startswith('_uni_model.')]
         for k in keys_to_remove:
             del state_dict[k]
 
     def on_load_checkpoint(self, checkpoint):
-        """Filter out UNI model keys from old checkpoints that included them."""
+        """Filter out CONCH model keys from old checkpoints that included them."""
         state_dict = checkpoint.get('state_dict', {})
         keys_to_remove = [k for k in state_dict if k.startswith('_uni_model.')]
         for k in keys_to_remove:
             del state_dict[k]
 
     def _load_uni_model(self):
-        """Lazily load UNI ViT-L/16 for on-the-fly feature extraction."""
+        """Lazily load CONCH ViT-B/16 for on-the-fly feature extraction."""
         if self._uni_model is None:
             import timm
             self._uni_model = timm.create_model(
-                "hf-hub:MahmoodLab/uni",
+                "hf_hub:MahmoodLab/CONCH",
                 pretrained=True,
-                init_values=1e-5,
-                dynamic_img_size=True,
             )
             self._uni_model.eval()
             self._uni_model.requires_grad_(False)
             self._uni_model = self._uni_model.to(self.device)
             n_params = sum(p.numel() for p in self._uni_model.parameters())
-            print(f"UNI model loaded for on-the-fly extraction: {n_params:,} params")
+            print(f"CONCH model loaded for on-the-fly extraction: {n_params:,} params")
         return self._uni_model
 
     @torch.no_grad()
     def _extract_uni_from_sub_crops(self, uni_sub_crops):
-        """Extract UNI features from pre-prepared sub-crops on GPU.
+        """Extract CONCH features from pre-prepared sub-crops on GPU.
 
         Args:
             uni_sub_crops: [B, 16, 3, 224, 224] — batch of 4x4 sub-crop grids,
                            already normalized with ImageNet stats.
 
         Returns:
-            uni_features: [B, S*S, 1024] where S = uni_spatial_pool_size (default 32)
+            uni_features: [B, S*S, 768] where S = uni_spatial_pool_size (default 32)
         """
         uni_model = self._load_uni_model()
         B = uni_sub_crops.shape[0]
         spatial_size = self.hparams.uni_spatial_pool_size
+        feat_dim = 768  # CONCH ViT-B/16 hidden dimension
         num_crops = 4  # 4x4 grid
         patches_per_side = 14  # 224/16
 
         # Batched UNI forward: [B, 16, 3, 224, 224] -> [B*16, 3, 224, 224]
         all_crops = uni_sub_crops.reshape(B * 16, 3, 224, 224).to(self.device)
-        all_feats = uni_model.forward_features(all_crops)  # [B*16, 197, 1024]
-        patch_tokens = all_feats[:, 1:, :]  # [B*16, 196, 1024]
+        all_feats = uni_model.forward_features(all_crops)  # [B*16, 197, 768]
+        patch_tokens = all_feats[:, 1:, :]  # [B*16, 196, 768]
 
-        # Reshape back to per-sample grids: [B, 4, 4, 14, 14, 1024]
+        # Reshape back to per-sample grids: [B, 4, 4, 14, 14, 768]
         patch_tokens = patch_tokens.reshape(
             B, num_crops, num_crops,
-            patches_per_side, patches_per_side, 1024
+            patches_per_side, patches_per_side, feat_dim
         )
-        # Interleave to spatial grid: [B, 56, 56, 1024]
+        # Interleave to spatial grid: [B, 56, 56, 768]
         full_size = num_crops * patches_per_side  # 56
         full_grid = patch_tokens.permute(0, 1, 3, 2, 4, 5)
-        full_grid = full_grid.reshape(B, full_size, full_size, 1024)
+        full_grid = full_grid.reshape(B, full_size, full_size, feat_dim)
 
         # Pool to target spatial size (batched)
         if spatial_size < full_size:
-            grid_bchw = full_grid.permute(0, 3, 1, 2)  # [B, 1024, 56, 56]
-            pooled = F.adaptive_avg_pool2d(grid_bchw, spatial_size)  # [B, 1024, S, S]
-            result = pooled.permute(0, 2, 3, 1)  # [B, S, S, 1024]
+            grid_bchw = full_grid.permute(0, 3, 1, 2)  # [B, 768, 56, 56]
+            pooled = F.adaptive_avg_pool2d(grid_bchw, spatial_size)  # [B, 768, S, S]
+            result = pooled.permute(0, 2, 3, 1)  # [B, S, S, 768]
         else:
             result = full_grid
 
         S = result.shape[1]
-        return result.reshape(B, S * S, 1024)  # [B, S*S, 1024]
+        return result.reshape(B, S * S, feat_dim)  # [B, S*S, 768]
 
     def _apply_cfg_dropout(self, labels, uni_features):
         """Apply classifier-free guidance dropout during training (vectorized)."""
@@ -965,7 +964,7 @@ class UNIStainNetTrainer(pl.LightningModule):
 
         Args:
             he_images: [B, 3, H, H] where H=512 or H=1024
-            uni_features: [B, N, 1024] where N=16 (4x4 CLS) or N=1024 (32x32 patch)
+            uni_features: [B, N, 768] where N=16 (4x4 CLS) or N=1024 (32x32 patch)
             labels: [B] class/stain labels
             num_inference_steps: ignored (single forward pass)
             guidance_scale: CFG scale (1.0 = no guidance)

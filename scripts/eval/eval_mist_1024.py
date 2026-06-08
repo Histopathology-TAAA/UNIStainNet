@@ -36,15 +36,14 @@ from src.utils.metrics import (
 
 
 def load_uni_model():
-    """Load UNI ViT-L/16 for on-the-fly feature extraction during eval."""
-    model = timm.create_model("hf-hub:MahmoodLab/uni", pretrained=True,
-                               init_values=1e-5, dynamic_img_size=True)
+    """Load CONCH ViT-B/16 for on-the-fly feature extraction during eval."""
+    model = timm.create_model("hf_hub:MahmoodLab/CONCH", pretrained=True)
     model = model.cuda().eval()
     return model
 
 
 def extract_features_for_crop(uni_model, he_crop_01, spatial_pool_size=32):
-    """Extract UNI features from an H&E crop (512 or 1024)."""
+    """Extract CONCH features from an H&E crop (512 or 1024)."""
     uni_transform = transforms.Compose([
         transforms.Normalize(mean=[0.485, 0.456, 0.406],
                              std=[0.229, 0.224, 0.225]),
@@ -71,10 +70,10 @@ def extract_features_for_crop(uni_model, he_crop_01, spatial_pool_size=32):
         patch_tokens = all_feats[:, 1:, :]
 
     patch_tokens = patch_tokens.reshape(
-        B, num_crops, num_crops, patches_per_side, patches_per_side, 1024
+        B, num_crops, num_crops, patches_per_side, patches_per_side, 768
     )
     full_size = num_crops * patches_per_side
-    full_grid = patch_tokens.permute(0, 1, 3, 2, 4, 5).reshape(B, full_size, full_size, 1024)
+    full_grid = patch_tokens.permute(0, 1, 3, 2, 4, 5).reshape(B, full_size, full_size, 768)
 
     if spatial_pool_size < full_size:
         grid_bchw = full_grid.permute(0, 3, 1, 2)
@@ -84,7 +83,7 @@ def extract_features_for_crop(uni_model, he_crop_01, spatial_pool_size=32):
         result = full_grid
 
     S = result.shape[1]
-    return result.reshape(B, S * S, 1024).cpu()
+    return result.reshape(B, S * S, 768).cpu()
 
 
 @torch.no_grad()

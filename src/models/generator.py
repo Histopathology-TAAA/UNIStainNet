@@ -1,7 +1,7 @@
 """
 SPADEUNetGenerator: H&E → IHC translation generator.
 
-SPADE-UNet conditioned on UNI pathology features + HER2 class embedding.
+SPADE-UNet conditioned on CONCH pathology features + HER2 class embedding.
 Encoder processes H&E input, decoder uses SPADE conditioning from UNI features
 + FiLM from class embedding, with skip connections.
 
@@ -27,7 +27,7 @@ class SPADEUNetGenerator(nn.Module):
     ~30M params.
     """
 
-    def __init__(self, num_classes=5, class_dim=64, uni_dim=1024,
+    def __init__(self, num_classes=5, class_dim=64, uni_dim=768,
                  input_skip=False, edge_encoder=False, edge_base_ch=32,
                  uni_spatial_size=4, image_size=512, uni_spade_at_512=False):
         super().__init__()
@@ -200,7 +200,7 @@ class SPADEUNetGenerator(nn.Module):
         """
         Args:
             he_images: [B, 3, H, H] in [-1, 1] where H=512 or H=1024
-            uni_features: [B, N, 1024] where N=16 (4x4 CLS) or N=1024 (32x32 patch)
+            uni_features: [B, N, 768] where N=16 (4x4 CLS) or N=1024 (32x32 patch)
             labels: [B] int class labels (0-4)
 
         Returns:

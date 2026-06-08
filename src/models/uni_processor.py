@@ -1,5 +1,5 @@
 """
-UNI feature processors: transform UNI pathology features into multi-scale spatial maps.
+CONCH feature processors: transform CONCH pathology features into multi-scale spatial maps.
 
 - UNIFeatureProcessor: for CLS-token features (4x4 = 16 tokens)
 - UNIFeatureProcessorHighRes: for patch-token features (32x32 = 1024 tokens)
@@ -11,13 +11,13 @@ import torch.nn.functional as F
 
 
 class UNIFeatureProcessor(nn.Module):
-    """Process UNI features [B, 16, 1024] → multi-scale spatial feature maps.
+    """Process CONCH features [B, 16, 768] → multi-scale spatial feature maps.
 
-    UNI produces 16 spatial tokens (4x4 grid) of 1024-dim. We project to
+    CONCH produces 16 spatial tokens (4x4 grid) of 768-dim. We project to
     generator channel dim and upsample to match each decoder layer resolution.
     """
 
-    def __init__(self, uni_dim=1024, base_channels=512):
+    def __init__(self, uni_dim=768, base_channels=512):
         super().__init__()
         self.base_channels = base_channels
 
@@ -65,7 +65,7 @@ class UNIFeatureProcessor(nn.Module):
     def forward(self, uni_features):
         """
         Args:
-            uni_features: [B, 16, 1024]
+            uni_features: [B, 16, 768]
 
         Returns:
             dict of spatial feature maps at each resolution
@@ -93,10 +93,10 @@ class UNIFeatureProcessor(nn.Module):
 
 
 class UNIFeatureProcessorHighRes(nn.Module):
-    """Process high-res UNI features [B, 1024, 1024] → multi-scale spatial maps.
+    """Process high-res CONCH features [B, 1024, 768] → multi-scale spatial maps.
 
-    With patch-token extraction, UNI produces 1024 tokens (32x32 spatial grid)
-    of 1024-dim — 64x more spatial resolution than the CLS-only 4x4 grid.
+    With patch-token extraction, CONCH produces 1024 tokens (32x32 spatial grid)
+    of 768-dim — 64x more spatial resolution than the CLS-only 4x4 grid.
 
     Since we START at 32x32, we process features with Conv2d (no hallucinated
     upsampling). Every spatial feature is backed by real UNI patch tokens.
@@ -109,7 +109,7 @@ class UNIFeatureProcessorHighRes(nn.Module):
         Also: 32→16 downsample → feat_16 (512ch, for bottleneck)
     """
 
-    def __init__(self, uni_dim=1024, base_channels=512, spatial_size=32,
+    def __init__(self, uni_dim=768, base_channels=512, spatial_size=32,
                  output_512=False):
         super().__init__()
         self.base_channels = base_channels
@@ -117,7 +117,7 @@ class UNIFeatureProcessorHighRes(nn.Module):
         self.output_512 = output_512
         ch = base_channels
 
-        # Project UNI 1024-dim → 512-dim per token
+        # Project CONCH 768-dim → 512-dim per token
         self.proj = nn.Sequential(
             nn.Linear(uni_dim, ch),
             nn.LeakyReLU(0.2, inplace=True),
@@ -188,7 +188,7 @@ class UNIFeatureProcessorHighRes(nn.Module):
     def forward(self, uni_features):
         """
         Args:
-            uni_features: [B, S*S, 1024] where S = spatial_size (default 32)
+            uni_features: [B, S*S, 768] where S = spatial_size (default 32)
 
         Returns:
             dict of spatial feature maps: {16, 32, 64, 128, 256}

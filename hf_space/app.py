@@ -73,10 +73,9 @@ def _load_models():
         _model_cache["model"] = model
         _model_cache["spatial_pool_size"] = getattr(model.hparams, "uni_spatial_size", 32)
 
-        print("Loading UNI ViT-L/16 ...")
+        print("Loading CONCH ViT-B/16 ...")
         uni_model = timm.create_model(
-            "hf-hub:MahmoodLab/uni", pretrained=True,
-            init_values=1e-5, dynamic_img_size=True,
+            "hf_hub:MahmoodLab/CONCH", pretrained=True,
         )
         uni_model = uni_model.cuda().eval()
         _model_cache["uni_model"] = uni_model
@@ -133,9 +132,9 @@ def extract_uni_features(uni_model, he_tensor_01, spatial_pool_size=32):
         all_feats = uni_model.forward_features(all_crops)
         patch_tokens = all_feats[:, 1:, :]
 
-    patch_tokens = patch_tokens.reshape(B, num_crops, num_crops, patches_per_side, patches_per_side, 1024)
+    patch_tokens = patch_tokens.reshape(B, num_crops, num_crops, patches_per_side, patches_per_side, 768)
     full_size = num_crops * patches_per_side
-    full_grid = patch_tokens.permute(0, 1, 3, 2, 4, 5).reshape(B, full_size, full_size, 1024)
+    full_grid = patch_tokens.permute(0, 1, 3, 2, 4, 5).reshape(B, full_size, full_size, 768)
 
     S = spatial_pool_size
     if S < full_size:
@@ -144,7 +143,7 @@ def extract_uni_features(uni_model, he_tensor_01, spatial_pool_size=32):
         result = pooled.permute(0, 2, 3, 1)
     else:
         result = full_grid
-    return result.reshape(B, S * S, 1024)
+    return result.reshape(B, S * S, 768)
 
 
 # ── Inference functions ──────────────────────────────────────────────

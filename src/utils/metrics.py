@@ -146,9 +146,9 @@ def compute_image_quality_metrics(generated, real):
 # ======================================================================
 
 def compute_uni_fid(generated, real):
-    """Frechet distance in UNI ViT-L/16 feature space.
+    """Frechet distance in CONCH ViT-B/16 feature space.
 
-    Uses CLS token features from UNI (Chen et al., Nature Medicine 2024)
+    Uses CLS token features from CONCH (Lu et al., Nature Medicine 2024)
     as a pathology-specific alternative to Inception FID.
 
     Args:
@@ -161,8 +161,7 @@ def compute_uni_fid(generated, real):
     import torchvision.transforms as transforms
     from scipy.linalg import sqrtm
 
-    uni_model = timm.create_model("hf-hub:MahmoodLab/uni", pretrained=True,
-                                   init_values=1e-5, dynamic_img_size=True)
+    uni_model = timm.create_model("hf_hub:MahmoodLab/CONCH", pretrained=True)
     uni_model = uni_model.cuda().eval()
 
     transform = transforms.Compose([
@@ -399,10 +398,9 @@ def compute_downstream_metrics(generated, real, labels, train_ihc_dir):
 
     results = {}
 
-    # Load UNI model
-    print("  Loading UNI model for downstream evaluation...")
-    uni_model = timm.create_model("hf-hub:MahmoodLab/uni", pretrained=True,
-                                   init_values=1e-5, dynamic_img_size=True)
+    # Load CONCH model
+    print("  Loading CONCH model for downstream evaluation...")
+    uni_model = timm.create_model("hf_hub:MahmoodLab/CONCH", pretrained=True)
     uni_model = uni_model.cuda().eval()
 
     uni_transform = transforms.Compose([

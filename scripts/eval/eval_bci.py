@@ -43,25 +43,24 @@ from src.utils.metrics import (
 
 
 def load_uni_model():
-    """Load UNI ViT-L/16 for on-the-fly feature extraction during eval."""
-    model = timm.create_model("hf-hub:MahmoodLab/uni", pretrained=True,
-                               init_values=1e-5, dynamic_img_size=True)
+    """Load CONCH ViT-B/16 for on-the-fly feature extraction during eval."""
+    model = timm.create_model("hf_hub:MahmoodLab/CONCH", pretrained=True)
     model = model.cuda().eval()
     return model
 
 
 def extract_features_for_crop(uni_model, he_crop_01, spatial_pool_size=32):
-    """Extract UNI features from a 512x512 H&E crop.
+    """Extract CONCH features from a 512x512 H&E crop.
 
-    Splits into 4x4 sub-crops, runs UNI on each, reassembles spatial grid.
+    Splits into 4x4 sub-crops, runs CONCH on each, reassembles spatial grid.
 
     Args:
-        uni_model: UNI ViT-L/16 model on CUDA
+        uni_model: CONCH ViT-B/16 model on CUDA
         he_crop_01: [B, 3, 512, 512] in [0, 1]
         spatial_pool_size: target spatial grid size (32 = 32x32 = 1024 tokens)
 
     Returns:
-        uni_features: [B, S*S, 1024]
+        uni_features: [B, S*S, 768]
     """
     uni_transform = transforms.Compose([
         transforms.Normalize(mean=[0.485, 0.456, 0.406],
@@ -88,14 +87,14 @@ def extract_features_for_crop(uni_model, he_crop_01, spatial_pool_size=32):
 
     with torch.no_grad():
         all_feats = uni_model.forward_features(all_crops)
-        patch_tokens = all_feats[:, 1:, :]  # [B*16, 196, 1024]
+        patch_tokens = all_feats[:, 1:, :]  # [B*16, 196, 768]
 
     # Reassemble spatial grid
     patch_tokens = patch_tokens.reshape(
-        B, num_crops, num_crops, patches_per_side, patches_per_side, 1024
+        B, num_crops, num_crops, patches_per_side, patches_per_side, 768
     )
     full_size = num_crops * patches_per_side  # 56
-    full_grid = patch_tokens.permute(0, 1, 3, 2, 4, 5).reshape(B, full_size, full_size, 1024)
+    full_grid = patch_tokens.permute(0, 1, 3, 2, 4, 5).reshape(B, full_size, full_size, 768)
 
     if spatial_pool_size < full_size:
         grid_bchw = full_grid.permute(0, 3, 1, 2)
@@ -105,7 +104,7 @@ def extract_features_for_crop(uni_model, he_crop_01, spatial_pool_size=32):
         result = full_grid
 
     S = result.shape[1]
-    return result.reshape(B, S * S, 1024).cpu()
+    return result.reshape(B, S * S, 768).cpu()
 
 
 @torch.no_grad()
