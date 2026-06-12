@@ -10,24 +10,23 @@ import torch
 import numpy as np
 from PIL import Image, ImageOps
 
-from skimage.filters import threshold_multiotsu
-
-from .visualizer import Visualizer
+# from skimage.filters import threshold_multiotsu
+# from .visualizer import Visualizer
 
 # Postfixes not to consider for segmentation
-from ..postprocessing import imadjust
-import cv2
+# from ..postprocessing import imadjust
+# import cv2
 
 import pickle
 import sys
 
-import bioformats
-import javabridge
-import bioformats.omexml as ome
-import tifffile as tf
+# import bioformats
+# import javabridge
+# import bioformats.omexml as ome
+# import tifffile as tf
 
-from tifffile import TiffFile
-import zarr
+# from tifffile import TiffFile
+# import zarr
 
 
 excluding_names = ['Hema', 'DAPI', 'DAPILap2', 'Ki67', 'Seg', 'Marked', 'SegRefined', 'SegOverlaid', 'Marker', 'Lap2']
