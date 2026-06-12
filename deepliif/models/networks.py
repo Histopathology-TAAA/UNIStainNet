@@ -11,7 +11,7 @@ from .att_unet import AttU_Net
 ###############################################################################
 # Helper Functions
 ###############################################################################
-from deepliif.util import util
+# from deepliif.util import util
 
 # as of pytorch 2.4, all optimizers start with an uppercase letter
 OPTIMIZER_MAPPING = {optimizer_name.lower():optimizer_name for optimizer_name in dir(torch.optim) if optimizer_name[0].isupper()} 

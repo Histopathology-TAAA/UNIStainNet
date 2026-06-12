@@ -34,14 +34,14 @@ from PIL import Image
 Image.MAX_IMAGE_PIXELS = None
 
 import numpy as np
-from dask import delayed, compute
+# from dask import delayed, compute
 
-from deepliif.util import *
-from deepliif.util.util import tensor_to_pil
-from deepliif.data import transform
-from deepliif.postprocessing import compute_final_results, compute_cell_results, to_array
-from deepliif.postprocessing import encode_cell_data_v4, decode_cell_data_v4
-from deepliif.options import Options, print_options
+# from deepliif.util import *
+# from deepliif.util.util import tensor_to_pil
+# from deepliif.data import transform
+# from deepliif.postprocessing import compute_final_results, compute_cell_results, to_array
+# from deepliif.postprocessing import encode_cell_data_v4, decode_cell_data_v4
+# from deepliif.options import Options, print_options
 
 from .base_model import BaseModel
 
