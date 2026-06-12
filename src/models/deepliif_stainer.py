@@ -111,6 +111,9 @@ class DeepLIIFStainer(nn.Module):
         # Slice channels 0:3 if it's the 15-channel model, otherwise return as is
         hema_rgb = out[:, 0:3, :, :]  # [B, 3, 512, 512] in [-1, 1]
 
+        # Collapse to 1-channel structural density to match hema_channels=1
+        hema_rgb = hema_rgb.mean(dim=1, keepdim=True)
+
         if needs_resize:
             hema_rgb = F.interpolate(hema_rgb, size=(H, W),
                                      mode='bilinear', align_corners=False)

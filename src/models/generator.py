@@ -323,15 +323,20 @@ class SPADEUNetGenerator(nn.Module):
         uni_maps = self.uni_processor(uni_features)
 
         # Edge encoder (parallel structure pathway).
-        # Always receives a 1-ch H-channel tensor [B, 1, H, H].
         # edge_input (provided by trainer): either IHC H-channel (Case A) or
         # H&E H-channel (Case B). When None (legacy), grayscale of he_images is used.
         if self.edge_encoder_type:
             if edge_input is not None:
-                edge_src = edge_input  # [B, 1, H, H] — pass directly
+                edge_src = edge_input  # [B, 1, H, H]
             else:
                 # Fallback: derive 1-ch grayscale from H&E RGB
                 edge_src = he_images.mean(dim=1, keepdim=True)  # [B, 1, H, H]
+                
+            # The original edge_encoder was trained on 3-channel RGB inputs.
+            # To maintain exact structural compatibility with the checkpoint's weights 
+            # (which expects in_ch=5 for MultiScale), we broadcast the 1-channel mask back to 3 channels.
+            if edge_src.shape[1] == 1:
+                edge_src = edge_src.repeat(1, 3, 1, 1)
 
             if self.image_size == 1024:
                 edge_src_512 = F.interpolate(edge_src, size=512, mode='bilinear', align_corners=False)

@@ -103,19 +103,30 @@ def generate_for_stain(model, uni_model, dataloader, stain_label, guidance_scale
         stain_labels = torch.full((he.size(0),), stain_label, device='cuda', dtype=torch.long)
         
         edge_input = ihc_h if aligned else he_h
-        # h_channel: determine based on DeepLIIF or legacy mode
+        
+        # h_channel: determine based on Hybrid DeepLIIF mode or legacy mode
         if deepliif_stainer is not None:
-            hema_rgb = deepliif_stainer.extract_hematoxylin(he)
             if not aligned:
-                edge_input = hema_rgb
-                h_channel = hema_rgb
-                align_source = hema_rgb
+                # Case B: Standard inference uses Analytical H&E
+                edge_input = he_h
+                h_channel = he_h
+                align_source = he_h
             else:
-                # Case A (aligned): During validation, we don't have her2 (IHC) input 
-                # for DeepLIIF, so we just expand the analytical ihc_h to match channels.
-                edge_input = ihc_h.expand(-1, hema_channels, -1, -1)
-                h_channel = ihc_h.expand(-1, hema_channels, -1, -1)
-                align_source = hema_rgb
+                # Case A: Uses DeepLIIF on IHC + Normalization
+                raw_ihc_hema = deepliif_stainer.extract_hematoxylin(her2)
+                
+                # Statistical Normalization
+                mean_he = he_h.mean(dim=[2, 3], keepdim=True)
+                std_he = he_h.std(dim=[2, 3], keepdim=True) + 1e-8
+                mean_ihc = raw_ihc_hema.mean(dim=[2, 3], keepdim=True)
+                std_ihc = raw_ihc_hema.std(dim=[2, 3], keepdim=True) + 1e-8
+                
+                ihc_h_norm = (raw_ihc_hema - mean_ihc) / std_ihc * std_he + mean_he
+                ihc_h_norm = ihc_h_norm.clamp(-1, 1)
+                
+                edge_input = ihc_h_norm
+                h_channel = ihc_h_norm
+                align_source = he_h
         else:
             h_channel = edge_input
             align_source = he_h
@@ -249,10 +260,7 @@ def main():
         deepliif_stainer = None
         if deepliif_weights_path:
             deepliif_stainer = DeepLIIFStainer(weights_path=deepliif_weights_path)
-            args.hema_channels = 3
-            hema_channels = 3
-            print(f"[WARNING] DeepLIIF is enabled. Auto-setting hema_channels to 3.")
-            print(f"DeepLIIF stainer initialized for eval (hema_channels={hema_channels})")
+            print(f"[INFO] DeepLIIF is enabled. Using {hema_channels}-channel setup.")
 
         # Generate
         gen, real, he, fnames = generate_for_stain(

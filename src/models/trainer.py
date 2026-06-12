@@ -179,9 +179,7 @@ class UNIStainNetTrainer(pl.LightningModule):
         if deepliif_weights_path:
             from src.models.deepliif_stainer import DeepLIIFStainer
             self._deepliif_stainer = DeepLIIFStainer(weights_path=deepliif_weights_path)
-            hema_channels = 3
-            self.hparams.hema_channels = 3
-            print(f"[WARNING] DeepLIIF is enabled. Auto-setting hema_channels to 3.")
+            print(f"[INFO] DeepLIIF is enabled. Using {self.hparams.hema_channels}-channel setup.")
 
         # Generator
         self.generator = SPADEUNetGenerator(
@@ -774,30 +772,26 @@ class UNIStainNetTrainer(pl.LightningModule):
                     noise = torch.randn_like(ihc_h) * 0.15  # std=0.15 on [-1, 1] range
                     ihc_h = (ihc_h + noise).clamp(-1, 1)
         # ---- Hematoxylin conditioning ----
-        deepliif_he_hema = self._get_hema(he)  # [B, 3, H, W] or None
+        if self._deepliif_stainer is not None and use_case_a:
+            # Hybrid mode: H&E uses Analytical (he_h). IHC uses DeepLIIF + Normalization.
+            raw_ihc_hema = self._get_hema(her2)  # [B, 1, H, W]
+            
+            # Statistical Normalization (Histogram Matching proxy)
+            mean_he = he_h.mean(dim=[2, 3], keepdim=True)
+            std_he = he_h.std(dim=[2, 3], keepdim=True) + 1e-8
+            
+            mean_ihc = raw_ihc_hema.mean(dim=[2, 3], keepdim=True)
+            std_ihc = raw_ihc_hema.std(dim=[2, 3], keepdim=True) + 1e-8
+            
+            # Shift and scale DeepLIIF output to match Analytical H&E distribution
+            ihc_h = (raw_ihc_hema - mean_ihc) / std_ihc * std_he + mean_he
+            ihc_h = ihc_h.clamp(-1, 1)
 
-        if deepliif_he_hema is not None:
-            # DeepLIIF mode (hema_channels=3)
-            if use_case_a:
-                # Destain IHC! her2 is the IHC image in the dataset
-                deepliif_ihc_hema = self._get_hema(her2)
-                edge_input = deepliif_ihc_hema
-                h_channel = deepliif_ihc_hema
-                # For alignment, src is he_hema, tgt is ihc_hema
-                align_src = deepliif_he_hema
-                align_tgt = deepliif_ihc_hema
-            else:
-                edge_input = deepliif_he_hema
-                h_channel = deepliif_he_hema
-                # For alignment, src and tgt are both he_hema
-                align_src = deepliif_he_hema
-                align_tgt = deepliif_he_hema
-        else:
-            # Legacy mode: 1-ch analytical H-channel
-            edge_input = ihc_h if use_case_a else he_h  # [B, 1, H, W]
-            h_channel = ihc_h if use_case_a else he_h
-            align_src = he_h
-            align_tgt = ihc_h if use_case_a else he_h
+        # Standard routing logic
+        edge_input = ihc_h if use_case_a else he_h  # [B, 1, H, W]
+        h_channel = ihc_h if use_case_a else he_h
+        align_src = he_h
+        align_tgt = ihc_h if use_case_a else he_h
 
         # RGB dropout: zero out H&E RGB channels with probability he_rgb_dropout
         # Forces the model to sometimes rely purely on the hematoxylin structure
@@ -1214,17 +1208,22 @@ class UNIStainNetTrainer(pl.LightningModule):
             labels = torch.full_like(labels, self.hparams.null_class)
 
         # ---- Hematoxylin conditioning for validation ----
-        deepliif_hema = self._get_hema(he)  # [B, 3, H, W] or None
-        deepliif_ihc_hema = self._get_hema(her2) if deepliif_hema is not None else None
-
-        if deepliif_hema is not None:
-            val_edge_input = deepliif_hema
-            val_h_channel = deepliif_hema
-            val_ihc_hema = deepliif_ihc_hema
+        if self._deepliif_stainer is not None:
+            raw_ihc_hema = self._get_hema(her2)
+            
+            mean_he = he_h.mean(dim=[2, 3], keepdim=True)
+            std_he = he_h.std(dim=[2, 3], keepdim=True) + 1e-8
+            mean_ihc = raw_ihc_hema.mean(dim=[2, 3], keepdim=True)
+            std_ihc = raw_ihc_hema.std(dim=[2, 3], keepdim=True) + 1e-8
+            
+            ihc_h = (raw_ihc_hema - mean_ihc) / std_ihc * std_he + mean_he
+            val_ihc_hema = ihc_h.clamp(-1, 1)
         else:
-            val_edge_input = he_h
-            val_h_channel = he_h
             val_ihc_hema = ihc_h
+
+        # Case B uses standard H&E analytical destaining
+        val_edge_input = he_h
+        val_h_channel = he_h
 
         # ---- Case B generation (metrics + visual) ----
         # Case B: real-world inference scenario
@@ -1274,7 +1273,7 @@ class UNIStainNetTrainer(pl.LightningModule):
             # Case A edge_input uses target structure
             with torch.no_grad():
                 generated_a = self.generator_ema(he, uni, labels,
-                                                edge_input=val_ihc_hema, he_h=val_h_channel,
+                                                edge_input=val_ihc_hema, he_h=he_h,
                                                 h_channel=val_ihc_hema)
             gen_a_01 = ((generated_a + 1) / 2).clamp(0, 1)
 
