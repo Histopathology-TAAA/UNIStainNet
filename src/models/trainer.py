@@ -178,9 +178,7 @@ class UNIStainNetTrainer(pl.LightningModule):
         self._deepliif_stainer = None
         if deepliif_weights_path:
             self._deepliif_stainer = DeepLIIFStainer(weights_path=deepliif_weights_path)
-            if hema_channels != 3:
-                print(f"[WARNING] DeepLIIF is enabled. Auto-setting hema_channels to 3 (was {hema_channels}).")
-                hema_channels = 3
+            # Allow 1-channel hema_channels so DeepLIIF G1 mask doesn't get broadcasted
 
         # Generator
         self.generator = SPADEUNetGenerator(
