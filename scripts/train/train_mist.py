@@ -158,7 +158,7 @@ def main():
     lr_monitor = LearningRateMonitor(logging_interval='step')
 
     wandb_logger = WandbLogger(
-        project='Destaining-unistainnet-v3',
+        project='Destaining-unistainnet-v4',
         name=args.wandb_name,
         save_dir='wandb',
     )
