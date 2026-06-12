@@ -302,8 +302,8 @@ class UNIStainNetTrainer(pl.LightningModule):
     def _get_hema(self, he_rgb):
         """Get hematoxylin conditioning tensor for the current config.
 
-        If DeepLIIF is enabled (hema_channels=3): run DeepLIIF to extract
-        3-ch virtual Hematoxylin from H&E RGB.
+        If DeepLIIF is enabled: run DeepLIIF to extract virtual Hematoxylin
+        from H&E RGB.
         Otherwise: return None (generator will fall back to grayscale).
 
         Args:
@@ -312,7 +312,7 @@ class UNIStainNetTrainer(pl.LightningModule):
         Returns:
             hema: [B, hema_channels, H, W] in [-1, 1], or None
         """
-        if self._deepliif_stainer is not None and self.hparams.hema_channels == 3:
+        if self._deepliif_stainer is not None:
             return self._deepliif_stainer.extract_hematoxylin(he_rgb)
         return None
 
@@ -1179,6 +1179,12 @@ class UNIStainNetTrainer(pl.LightningModule):
         he_01 = ((he[:n].cpu() + 1) / 2).clamp(0, 1)
         h_he_01 = ((h_he[:n].cpu() + 1) / 2).clamp(0, 1)
         h_ihc_01 = ((h_ihc[:n].cpu() + 1) / 2).clamp(0, 1)
+
+        # Broadcast 1-channel masks to 3-channel grayscale for the logging grid
+        if h_he_01.shape[1] == 1:
+            h_he_01 = h_he_01.repeat(1, 3, 1, 1)
+        if h_ihc_01.shape[1] == 1:
+            h_ihc_01 = h_ihc_01.repeat(1, 3, 1, 1)
         
         grid_images = []
         for i in range(n):
@@ -1359,11 +1365,11 @@ class UNIStainNetTrainer(pl.LightningModule):
 
         # If DeepLIIF is enabled and caller didn't provide explicit h_channel,
         # run DeepLIIF to extract virtual Hematoxylin
-        if self._deepliif_stainer is not None and self.hparams.hema_channels == 3:
-            if h_channel is None or h_channel.shape[1] != 3:
+        if self._deepliif_stainer is not None:
+            if h_channel is None or h_channel.shape[1] != self.hparams.hema_channels:
                 deepliif_hema = self._deepliif_stainer.extract_hematoxylin(he_images)
                 h_channel = deepliif_hema
-                if edge_input is None or edge_input.shape[1] != 3:
+                if edge_input is None or edge_input.shape[1] != self.hparams.hema_channels:
                     edge_input = deepliif_hema
 
         if guidance_scale <= 1.0:

@@ -104,16 +104,16 @@ def generate_for_stain(model, uni_model, dataloader, stain_label, guidance_scale
         
         edge_input = ihc_h if aligned else he_h
         # h_channel: determine based on DeepLIIF or legacy mode
-        if deepliif_stainer is not None and hema_channels == 3:
-            deepliif_he_hema = deepliif_stainer.extract_hematoxylin(he)
+        if deepliif_stainer is not None:
+            hema_rgb = deepliif_stainer.extract_hematoxylin(he)
             if not aligned:
-                edge_input = deepliif_he_hema
-                h_channel = deepliif_he_hema
+                edge_input = hema_rgb
+                h_channel = hema_rgb
             else:
                 # Case A (aligned): During validation, we don't have her2 (IHC) input 
-                # for DeepLIIF, so we just expand the analytical ihc_h to 3 channels.
-                edge_input = ihc_h.expand(-1, 3, -1, -1)
-                h_channel = ihc_h.expand(-1, 3, -1, -1)
+                # for DeepLIIF, so we just expand the analytical ihc_h to match channels.
+                edge_input = ihc_h.expand(-1, hema_channels, -1, -1)
+                h_channel = ihc_h.expand(-1, hema_channels, -1, -1)
         else:
             h_channel = edge_input
 
@@ -244,7 +244,7 @@ def main():
         hema_channels = getattr(model.hparams, 'hema_channels', 1)
         deepliif_weights_path = getattr(model.hparams, 'deepliif_weights_path', '')
         deepliif_stainer = None
-        if deepliif_weights_path and hema_channels == 3:
+        if deepliif_weights_path:
             deepliif_stainer = DeepLIIFStainer(weights_path=deepliif_weights_path)
             print(f"DeepLIIF stainer initialized for eval (hema_channels={hema_channels})")
 
