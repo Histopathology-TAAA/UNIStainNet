@@ -1173,6 +1173,24 @@ class UNIStainNetTrainer(pl.LightningModule):
                 'global_step': self.global_step,
             })
 
+    def _log_hema_compare_grid(self, he, h_he, h_ihc, her2_01, key):
+        """Log H&E | H-H&E | H-IHC | IHC grid to wandb."""
+        n = min(4, len(he))
+        he_01 = ((he[:n].cpu() + 1) / 2).clamp(0, 1)
+        h_he_01 = ((h_he[:n].cpu() + 1) / 2).clamp(0, 1)
+        h_ihc_01 = ((h_ihc[:n].cpu() + 1) / 2).clamp(0, 1)
+        
+        grid_images = []
+        for i in range(n):
+            grid_images.extend([he_01[i], h_he_01[i], h_ihc_01[i], her2_01[i].cpu()])
+            
+        grid = torchvision.utils.make_grid(grid_images, nrow=4, padding=2)
+        if self.logger:
+            self.logger.experiment.log({
+                key: [wandb.Image(grid, caption='H&E | H-H&E | H-IHC | IHC')],
+                'global_step': self.global_step,
+            })
+
     def validation_step(self, batch, batch_idx):
         he, her2, he_h, ihc_h, uni_or_crops, labels, fnames = batch
 
@@ -1190,12 +1208,16 @@ class UNIStainNetTrainer(pl.LightningModule):
 
         # ---- Hematoxylin conditioning for validation ----
         deepliif_hema = self._get_hema(he)  # [B, 3, H, W] or None
+        deepliif_ihc_hema = self._get_hema(her2) if deepliif_hema is not None else None
+
         if deepliif_hema is not None:
             val_edge_input = deepliif_hema
             val_h_channel = deepliif_hema
+            val_ihc_hema = deepliif_ihc_hema
         else:
             val_edge_input = he_h
             val_h_channel = he_h
+            val_ihc_hema = ihc_h
 
         # ---- Case B generation (metrics + visual) ----
         # Case B: real-world inference scenario
@@ -1242,17 +1264,11 @@ class UNIStainNetTrainer(pl.LightningModule):
         # ---- Case A generation (visual only, no metrics) ----
         gen_a_01 = None
         if self.hparams.case_a_prob > 0:
-            # Case A edge_input: expand ihc_h to match hema_channels if needed
-            if deepliif_hema is not None:
-                case_a_edge = ihc_h.expand(-1, 3, -1, -1)
-                case_a_h = ihc_h.expand(-1, 3, -1, -1)
-            else:
-                case_a_edge = ihc_h
-                case_a_h = ihc_h
+            # Case A edge_input uses target structure
             with torch.no_grad():
                 generated_a = self.generator_ema(he, uni, labels,
-                                                edge_input=case_a_edge, he_h=he_h,
-                                                h_channel=case_a_h)
+                                                edge_input=val_ihc_hema, he_h=he_h,
+                                                h_channel=val_ihc_hema)
             gen_a_01 = ((generated_a + 1) / 2).clamp(0, 1)
 
         # Collect per-label samples for visual grids (multi-stain only)
@@ -1262,20 +1278,24 @@ class UNIStainNetTrainer(pl.LightningModule):
                 if lbl == self.hparams.null_class:
                     continue
                 if lbl not in self._val_per_label_samples:
-                    self._val_per_label_samples[lbl] = {'he': [], 'real': [], 'gen_b': [], 'gen_a': []}
+                    self._val_per_label_samples[lbl] = {'he': [], 'real': [], 'gen_b': [], 'gen_a': [], 'h_he': [], 'h_ihc': []}
                 bucket = self._val_per_label_samples[lbl]
                 if len(bucket['he']) < 4:
                     bucket['he'].append(he[i].cpu())
                     bucket['real'].append(her2_01[i].cpu())
                     bucket['gen_b'].append(gen_b_01[i].cpu())
+                    bucket['h_he'].append(val_h_channel[i].cpu())
+                    bucket['h_ihc'].append(val_ihc_hema[i].cpu())
                     if gen_a_01 is not None:
                         bucket['gen_a'].append(gen_a_01[i].cpu())
 
         # Log sample grids: first batch (fixed) + one random batch
         if batch_idx == 0:
             self._log_sample_grid(he, her2_01, gen_b_01, 'val/samples_fixed', gen_a_01=gen_a_01)
+            self._log_hema_compare_grid(he, val_h_channel, val_ihc_hema, her2_01, 'val/hema_compare_fixed')
         elif batch_idx == self._random_val_batch_idx:
             self._log_sample_grid(he, her2_01, gen_b_01, 'val/samples_random', gen_a_01=gen_a_01)
+            self._log_hema_compare_grid(he, val_h_channel, val_ihc_hema, her2_01, 'val/hema_compare_random')
 
     def on_validation_epoch_end(self):
         """Log per-label sample grids if multiple labels are present."""
@@ -1304,6 +1324,13 @@ class UNIStainNetTrainer(pl.LightningModule):
                 torch.stack(bucket['gen_b']),
                 f'val/samples_{name}',
                 gen_a_01=gen_a_stack
+            )
+            self._log_hema_compare_grid(
+                torch.stack(bucket['he']),
+                torch.stack(bucket['h_he']),
+                torch.stack(bucket['h_ihc']),
+                torch.stack(bucket['real']),
+                f'val/hema_compare_{name}'
             )
 
         self._val_per_label_samples = {}
