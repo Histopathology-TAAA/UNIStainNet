@@ -59,6 +59,16 @@ class DeepLIIFStainer(nn.Module):
         self._output_nc = output_nc
 
         # Import from the cloned deepliif package
+        import sys
+        from unittest.mock import MagicMock
+
+        # Mock out heavy and unnecessary DeepLIIF dependencies to prevent import crashes.
+        # Since we only use PyTorch's define_G, we don't need javabridge, cv2, bioformats, etc.
+        annoying_modules = ['cv2', 'dask', 'bioformats', 'skimage', 'tifffile', 'zarr', 'dominate', 'bs4', 'javabridge', 'requests']
+        for mod in annoying_modules:
+            if mod not in sys.modules:
+                sys.modules[mod] = MagicMock()
+
         from deepliif.models.networks import define_G
 
         model = define_G(
