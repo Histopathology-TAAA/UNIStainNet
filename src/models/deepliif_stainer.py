@@ -66,8 +66,9 @@ class DeepLIIFStainer(nn.Module):
         # Since we only use PyTorch's define_G, we don't need javabridge, cv2, bioformats, etc.
         annoying_modules = [
             'cv2', 'dask', 'bioformats', 'skimage', 'skimage.filters', 'skimage.color', 
-            'skimage.measure', 'skimage.morphology', 'skimage.segmentation', 
-            'tifffile', 'zarr', 'dominate', 'bs4', 'javabridge', 'requests'
+            'skimage.measure', 'skimage.morphology', 'skimage.segmentation', 'skimage.metrics',
+            'tifffile', 'zarr', 'dominate', 'bs4', 'javabridge', 'requests',
+            'deepliif.util', 'deepliif.data', 'deepliif.postprocessing', 'deepliif.options'
         ]
         for mod in annoying_modules:
             if mod not in sys.modules:
