@@ -109,13 +109,16 @@ def generate_for_stain(model, uni_model, dataloader, stain_label, guidance_scale
             if not aligned:
                 edge_input = hema_rgb
                 h_channel = hema_rgb
+                align_source = hema_rgb
             else:
                 # Case A (aligned): During validation, we don't have her2 (IHC) input 
                 # for DeepLIIF, so we just expand the analytical ihc_h to match channels.
                 edge_input = ihc_h.expand(-1, hema_channels, -1, -1)
                 h_channel = ihc_h.expand(-1, hema_channels, -1, -1)
+                align_source = hema_rgb
         else:
             h_channel = edge_input
+            align_source = he_h
 
         with torch.amp.autocast('cuda', dtype=torch.bfloat16):
             # Extract UNI features
@@ -126,7 +129,7 @@ def generate_for_stain(model, uni_model, dataloader, stain_label, guidance_scale
                                  guidance_scale=guidance_scale,
                                  seed=seed + batch_idx,
                                  edge_input=edge_input,
-                                 he_h=he_h,
+                                 he_h=align_source,
                                  h_channel=h_channel)
             
             # Backward compatibility: older models return tensor, newer alignment models return tuple

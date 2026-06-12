@@ -1230,7 +1230,7 @@ class UNIStainNetTrainer(pl.LightningModule):
         # Case B: real-world inference scenario
         with torch.no_grad():
             generated_b = self.generator_ema(he, uni, labels,
-                                            edge_input=val_edge_input, he_h=he_h,
+                                            edge_input=val_edge_input, he_h=val_h_channel,
                                             h_channel=val_h_channel)
 
         # LPIPS (4x downsample: 128 for 512, 256 for 1024)
@@ -1274,7 +1274,7 @@ class UNIStainNetTrainer(pl.LightningModule):
             # Case A edge_input uses target structure
             with torch.no_grad():
                 generated_a = self.generator_ema(he, uni, labels,
-                                                edge_input=val_ihc_hema, he_h=he_h,
+                                                edge_input=val_ihc_hema, he_h=val_h_channel,
                                                 h_channel=val_ihc_hema)
             gen_a_01 = ((generated_a + 1) / 2).clamp(0, 1)
 
