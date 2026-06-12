@@ -64,8 +64,9 @@ class DeepLIIFStainer(nn.Module):
         model = define_G(
             input_nc=3, output_nc=output_nc, ngf=64,
             netG='resnet_9blocks', norm='batch',
-            use_dropout=False, init_type='normal',
+            use_dropout=True, init_type='normal',
             init_gain=0.02, gpu_ids=[],
+            padding_type='zero'
         )
 
         model.load_state_dict(state_dict)
