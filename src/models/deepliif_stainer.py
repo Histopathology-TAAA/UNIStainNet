@@ -43,18 +43,7 @@ class DeepLIIFStainer(nn.Module):
         if self._model is not None:
             return self._model
 
-        # Import from the cloned deepliif package (already on sys.path)
-        from deepliif.models.networks import define_G
-
-        # DeepLIIF Latest Model: 3-ch input (H&E RGB), 15-ch output
-        model = define_G(
-            input_nc=3, output_nc=15, ngf=64,
-            netG='resnet_9blocks', norm='batch',
-            use_dropout=False, init_type='normal',
-            init_gain=0.02, gpu_ids=[],
-        )
-
-        # Load pretrained weights
+        # Load pretrained weights first to inspect the shape
         if not os.path.isfile(self._weights_path):
             raise FileNotFoundError(
                 f"DeepLIIF weights not found at: {self._weights_path}\n"
@@ -62,13 +51,30 @@ class DeepLIIFStainer(nn.Module):
             )
 
         state_dict = torch.load(self._weights_path, map_location='cpu')
+        
+        # Detect whether this is a 15-channel multi-task generator or a 3-channel single-modality generator (like latest_net_G1.pth)
+        # We look at the final convolution weight shape: [out_channels, in_channels, k, k]
+        final_layer_key = 'model.26.weight' if 'model.26.weight' in state_dict else list(state_dict.keys())[-2]
+        output_nc = state_dict[final_layer_key].shape[0]
+        self._output_nc = output_nc
+
+        # Import from the cloned deepliif package
+        from deepliif.models.networks import define_G
+
+        model = define_G(
+            input_nc=3, output_nc=output_nc, ngf=64,
+            netG='resnet_9blocks', norm='batch',
+            use_dropout=False, init_type='normal',
+            init_gain=0.02, gpu_ids=[],
+        )
+
         model.load_state_dict(state_dict)
         model = model.to(device)
         model.eval()
         model.requires_grad_(False)
 
         n_params = sum(p.numel() for p in model.parameters())
-        print(f"[DeepLIIFStainer] Loaded pretrained generator: {n_params:,} params")
+        print(f"[DeepLIIFStainer] Loaded pretrained generator ({output_nc} output channels): {n_params:,} params")
         print(f"[DeepLIIFStainer] Weights: {self._weights_path}")
 
         self._model = model
@@ -86,11 +92,6 @@ class DeepLIIFStainer(nn.Module):
 
         Returns:
             hema_rgb: ``[B, 3, H, W]`` virtual Hematoxylin in ``[-1, 1]`` range.
-
-        Notes:
-            - DeepLIIF expects 512×512 input. If the input is a different
-              resolution, it is resized to 512, processed, then resized back.
-            - Output stays in ``[-1, 1]`` (Tanh) to match the pipeline convention.
         """
         model = self._load_model(he_rgb.device)
 
@@ -103,11 +104,14 @@ class DeepLIIFStainer(nn.Module):
         else:
             x = he_rgb
 
-        # Forward pass — 15-channel output
-        out = model(x)  # [B, 15, 512, 512]
+        # Forward pass
+        out = model(x)  # [B, output_nc, 512, 512]
 
-        # Slice channels 0:3 → Reconstructed Hematoxylin
-        hema_rgb = out[:, 0:3, :, :]  # [B, 3, 512, 512] in [-1, 1]
+        # Slice channels 0:3 if it's the 15-channel model, otherwise return as is
+        if self._output_nc >= 15:
+            hema_rgb = out[:, 0:3, :, :]  # [B, 3, 512, 512] in [-1, 1]
+        else:
+            hema_rgb = out[:, 0:3, :, :]  # G1 is 3 channels, so this takes all 3
 
         if needs_resize:
             hema_rgb = F.interpolate(hema_rgb, size=(H, W),
