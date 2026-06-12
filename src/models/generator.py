@@ -62,11 +62,11 @@ class AlignmentNetwork(nn.Module):
     and target image. Final layer is zero-initialized so it starts as
     an identity transformation (zero flow).
     """
-    def __init__(self):
+    def __init__(self, in_channels=2):
         super().__init__()
-        # Input: concat(source_h, target_h) = 2 channels
+        # Input: concat(source_h, target_h) = in_channels
         self.net = nn.Sequential(
-            nn.Conv2d(2, 32, 7, padding=3),
+            nn.Conv2d(in_channels, 32, 7, padding=3),
             nn.LeakyReLU(0.2, inplace=True),
             nn.Conv2d(32, 64, 5, padding=2, stride=2), # downsample
             nn.LeakyReLU(0.2, inplace=True),
@@ -105,13 +105,19 @@ class SPADEUNetGenerator(nn.Module):
     Decoder uses SPADE conditioning from UNI features + FiLM from class embedding.
     Skip connections from encoder to decoder.
 
+    Args:
+        hema_channels: Number of channels for the hematoxylin conditioning input.
+            1 = legacy analytical H-channel (1ch).
+            3 = DeepLIIF virtual Hematoxylin (3ch RGB).
+            Main encoder input becomes 3 (H&E RGB) + hema_channels.
+
     ~30M params.
     """
 
     def __init__(self, num_classes=5, class_dim=64, uni_dim=1024,
                  input_skip=False, edge_encoder=False, edge_base_ch=32,
                  uni_spatial_size=4, image_size=512, uni_spade_at_512=False,
-                 use_alignment=False, learnable_sobel=False):
+                 use_alignment=False, learnable_sobel=False, hema_channels=1):
         super().__init__()
         self.num_classes = num_classes
         self.class_dim = class_dim
@@ -121,6 +127,7 @@ class SPADEUNetGenerator(nn.Module):
         self.image_size = image_size
         self.uni_spade_at_512 = uni_spade_at_512
         self.use_alignment = use_alignment
+        self.hema_channels = hema_channels
 
         # Class embedding (5 classes: 0, 1+, 2+, 3+, null)
         self.class_embed = nn.Embedding(num_classes, class_dim)
@@ -143,11 +150,17 @@ class SPADEUNetGenerator(nn.Module):
         # For 1024 input, H&E is downsampled to 512 before edge extraction.
         self.edge_encoder_type = edge_encoder  # False, 'v1', or 'v2'
         if edge_encoder == 'v2':
-            self.edge_encoder = MultiScaleEdgeEncoder(base_ch=edge_base_ch, learnable_sobel=learnable_sobel)
+            self.edge_encoder = MultiScaleEdgeEncoder(
+                base_ch=edge_base_ch, learnable_sobel=learnable_sobel,
+                input_channels=hema_channels,
+            )
             edge_ch = {512: edge_base_ch, 256: edge_base_ch, 128: edge_base_ch * 2,
                        64: edge_base_ch * 4, 32: edge_base_ch * 4}
         elif edge_encoder:  # True or 'v1'
-            self.edge_encoder = EdgeEncoder(base_ch=edge_base_ch, learnable_sobel=learnable_sobel)
+            self.edge_encoder = EdgeEncoder(
+                base_ch=edge_base_ch, learnable_sobel=learnable_sobel,
+                input_channels=hema_channels,
+            )
             edge_ch = {512: 0, 256: edge_base_ch, 128: edge_base_ch * 2,
                        64: edge_base_ch * 4, 32: edge_base_ch * 4}
         else:
@@ -155,17 +168,18 @@ class SPADEUNetGenerator(nn.Module):
             edge_ch = {512: 0, 256: 0, 128: 0, 64: 0, 32: 0}
 
         # === 1024 support: extra encoder/decoder levels ===
-        # Encoder input: 4 channels (3ch H&E RGB + 1ch H-channel)
+        # Encoder input: 3ch H&E RGB + hema_channels (1ch H-channel or 3ch DeepLIIF)
+        encoder_in_ch = 3 + hema_channels  # 4 (legacy) or 6 (DeepLIIF)
         if image_size == 1024:
             # enc0: 1024→512 (lightweight, just spatial downsample)
             self.enc0 = nn.Sequential(
-                nn.Conv2d(4, 32, 4, stride=2, padding=1),
+                nn.Conv2d(encoder_in_ch, 32, 4, stride=2, padding=1),
                 nn.LeakyReLU(0.2, inplace=True),
             )
             enc1_in_ch = 32  # enc1 takes enc0 output, not raw input
         else:
             self.enc0 = None
-            enc1_in_ch = 4  # enc1 takes 4ch input at 512
+            enc1_in_ch = encoder_in_ch  # enc1 takes raw input at 512
 
         # Encoder
         self.enc1 = nn.Sequential(  # 512→256
@@ -258,14 +272,16 @@ class SPADEUNetGenerator(nn.Module):
             )
 
         if self.use_alignment:
-            self.alignment_net = AlignmentNetwork()
+            self.alignment_net = AlignmentNetwork(in_channels=self.hema_channels * 2)
 
     def encode(self, images, h_channel=None):
         """Extract intermediate encoder features for PatchNCE loss.
 
         Args:
             images: [B, 3, H, H] in [-1, 1] (H&E or generated IHC)
-            h_channel: [B, 1, H, H] in [-1, 1] or None. If None, grayscale fallback.
+            h_channel: [B, C, H, H] in [-1, 1] or None.
+                       C=1 (legacy H-channel) or C=3 (DeepLIIF Hematoxylin).
+                       If None, grayscale fallback (expanded to hema_channels).
 
         Returns:
             dict mapping layer index to feature tensor:
@@ -273,8 +289,9 @@ class SPADEUNetGenerator(nn.Module):
                  3: [B, 256, 64, 64], 4: [B, 512, 32, 32]}
         """
         if h_channel is None:
-            h_channel = images.mean(dim=1, keepdim=True)
-        encoder_input = torch.cat([images, h_channel], dim=1)  # [B, 4, H, H]
+            gray = images.mean(dim=1, keepdim=True)  # [B, 1, H, H]
+            h_channel = gray.expand(-1, self.hema_channels, -1, -1)
+        encoder_input = torch.cat([images, h_channel], dim=1)  # [B, 3+hema_ch, H, H]
 
         if self.enc0 is not None:
             e0 = self.enc0(encoder_input)
@@ -324,10 +341,11 @@ class SPADEUNetGenerator(nn.Module):
         else:
             edge_maps = None
 
-        # Build 4-channel encoder input: [B, 4, H, H]
+        # Build encoder input: [B, 3+hema_ch, H, H]
         if h_channel is None:
-            h_channel = he_images.mean(dim=1, keepdim=True)
-        encoder_input = torch.cat([he_images, h_channel], dim=1)  # [B, 4, H, H]
+            gray = he_images.mean(dim=1, keepdim=True)
+            h_channel = gray.expand(-1, self.hema_channels, -1, -1)
+        encoder_input = torch.cat([he_images, h_channel], dim=1)  # [B, 3+hema_ch, H, H]
 
         # === 1024: extra encoder level ===
         if self.enc0 is not None:

@@ -23,6 +23,7 @@ import argparse
 import json
 from pathlib import Path
 
+# pyrefly: ignore [missing-import]
 import torch
 import torch.nn.functional as F
 import timm
@@ -33,6 +34,7 @@ from tqdm import tqdm
 
 from src.models.trainer import UNIStainNetTrainer
 from src.data.mist_dataset import MISTMultiStainCropDataModule, STAIN_TO_LABEL
+from src.models.deepliif_stainer import DeepLIIFStainer
 from src.utils.dab import DABExtractor
 from src.utils.metrics import (
     compute_image_quality_metrics,
@@ -86,7 +88,8 @@ def extract_features_from_sub_crops(uni_model, uni_sub_crops, spatial_pool_size=
 
 @torch.no_grad()
 def generate_for_stain(model, uni_model, dataloader, stain_label, guidance_scale=1.0, seed=42,
-                       spatial_pool_size=32, no_downcasting=False, aligned=False):
+                       spatial_pool_size=32, no_downcasting=False, aligned=False,
+                       deepliif_stainer=None, hema_channels=1):
     """Generate IHC images for a specific stain."""
     all_gen, all_real, all_he, all_fnames = [], [], [], []
 
@@ -100,8 +103,19 @@ def generate_for_stain(model, uni_model, dataloader, stain_label, guidance_scale
         stain_labels = torch.full((he.size(0),), stain_label, device='cuda', dtype=torch.long)
         
         edge_input = ihc_h if aligned else he_h
-        # h_channel for 4-ch encoder: same as edge_input (Case B = he_h, aligned = ihc_h)
-        h_channel = edge_input
+        # h_channel: determine based on DeepLIIF or legacy mode
+        if deepliif_stainer is not None and hema_channels == 3:
+            deepliif_he_hema = deepliif_stainer.extract_hematoxylin(he)
+            if not aligned:
+                edge_input = deepliif_he_hema
+                h_channel = deepliif_he_hema
+            else:
+                # Case A (aligned): During validation, we don't have her2 (IHC) input 
+                # for DeepLIIF, so we just expand the analytical ihc_h to 3 channels.
+                edge_input = ihc_h.expand(-1, 3, -1, -1)
+                h_channel = ihc_h.expand(-1, 3, -1, -1)
+        else:
+            h_channel = edge_input
 
         with torch.amp.autocast('cuda', dtype=torch.bfloat16):
             # Extract UNI features
@@ -226,6 +240,14 @@ def main():
         dm.setup('test')
         test_loader = dm.val_dataloader()
 
+        # Initialize DeepLIIF if checkpoint used it
+        hema_channels = getattr(model.hparams, 'hema_channels', 1)
+        deepliif_weights_path = getattr(model.hparams, 'deepliif_weights_path', '')
+        deepliif_stainer = None
+        if deepliif_weights_path and hema_channels == 3:
+            deepliif_stainer = DeepLIIFStainer(weights_path=deepliif_weights_path)
+            print(f"DeepLIIF stainer initialized for eval (hema_channels={hema_channels})")
+
         # Generate
         gen, real, he, fnames = generate_for_stain(
             model, uni_model, test_loader, stain_label,
@@ -233,7 +255,10 @@ def main():
             seed=None if args.random_seed else 42,
             spatial_pool_size=spatial_pool_size,
             no_downcasting=args.no_downcasting,
-            aligned=args.aligned)
+            aligned=args.aligned,
+            deepliif_stainer=deepliif_stainer,
+            hema_channels=hema_channels,
+        )
         print(f"Generated {len(gen)} images")
 
         if args.composite_bg:
