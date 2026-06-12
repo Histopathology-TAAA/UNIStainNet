@@ -31,6 +31,11 @@ def main():
                         help='Wandb run name')
     parser.add_argument('--resume_from', type=str, default=None,
                         help='Resume from checkpoint path')
+    parser.add_argument('--deepliif_weights_path', type=str, default='',
+                        help='Path to pretrained DeepLIIF generator weights (e.g. deepliif-weights/latest_net_G.pth). '
+                             'Enabling this automatically forces hema_channels to 3.')
+    parser.add_argument('--hema_channels', type=int, default=1, choices=[1, 3],
+                        help='Number of hematoxylin channels. If deepliif_weights_path is set, this is forced to 3. Default: 1')
     args = parser.parse_args()
 
     print("=" * 70)
@@ -84,6 +89,9 @@ def main():
         # On-the-fly UNI extraction
         extract_uni_on_the_fly=True,
         uni_spatial_pool_size=32,
+        # DeepLIIF virtual Hematoxylin staining
+        deepliif_weights_path=args.deepliif_weights_path,
+        hema_channels=args.hema_channels,
     )
 
     dm = BCICropDataModule(

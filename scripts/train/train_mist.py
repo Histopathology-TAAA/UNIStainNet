@@ -58,6 +58,11 @@ def main():
     parser.add_argument('--bilateral', type=float, default=0.0,
                         help='Probability of applying Bilateral Filter to IHC H-channel during Case A '
                              'to destroy DAB ghosts while preserving edges (range 0.0 to 1.0). Default: 0.0 (disabled)')
+    parser.add_argument('--deepliif_weights_path', type=str, default='',
+                        help='Path to pretrained DeepLIIF generator weights (e.g. deepliif-weights/latest_net_G.pth). '
+                             'Enabling this automatically forces hema_channels to 3.')
+    parser.add_argument('--hema_channels', type=int, default=1, choices=[1, 3],
+                        help='Number of hematoxylin channels. If deepliif_weights_path is set, this is forced to 3. Default: 1')
     args = parser.parse_args()
 
     print("=" * 70)
@@ -126,6 +131,9 @@ def main():
         # IHC Augmentation to prevent DAB leakage
         ihc_augmentation=args.ihc_augmentation,
         bilateral_prob=args.bilateral,
+        # DeepLIIF virtual Hematoxylin staining
+        deepliif_weights_path=args.deepliif_weights_path,
+        hema_channels=args.hema_channels,
     )
 
     dm = MISTMultiStainCropDataModule(

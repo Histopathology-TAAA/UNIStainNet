@@ -24,3 +24,7 @@ Thumbs.db
 .venv/
 venv/
 env/
+
+# DeepLIIF Weights
+model-server/
+deepliif-weights/
