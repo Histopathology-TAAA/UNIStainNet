@@ -246,6 +246,9 @@ def main():
         deepliif_stainer = None
         if deepliif_weights_path:
             deepliif_stainer = DeepLIIFStainer(weights_path=deepliif_weights_path)
+            args.hema_channels = 3
+            hema_channels = 3
+            print(f"[WARNING] DeepLIIF is enabled. Auto-setting hema_channels to 3.")
             print(f"DeepLIIF stainer initialized for eval (hema_channels={hema_channels})")
 
         # Generate

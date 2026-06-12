@@ -109,10 +109,7 @@ class DeepLIIFStainer(nn.Module):
         out = model(x)  # [B, output_nc, 512, 512]
 
         # Slice channels 0:3 if it's the 15-channel model, otherwise return as is
-        if self._output_nc >= 15:
-            hema_rgb = out[:, 0:3, :, :]  # [B, 3, 512, 512] in [-1, 1]
-        else:
-            hema_rgb = out[:, 0:3, :, :]  # G1 is 1 or 3 channels, slice safely
+        hema_rgb = out[:, 0:3, :, :]  # [B, 3, 512, 512] in [-1, 1]
 
         if needs_resize:
             hema_rgb = F.interpolate(hema_rgb, size=(H, W),

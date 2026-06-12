@@ -177,8 +177,11 @@ class UNIStainNetTrainer(pl.LightningModule):
         # DeepLIIF virtual Hematoxylin stainer (frozen, lazy-loaded)
         self._deepliif_stainer = None
         if deepliif_weights_path:
+            from src.models.deepliif_stainer import DeepLIIFStainer
             self._deepliif_stainer = DeepLIIFStainer(weights_path=deepliif_weights_path)
-            # Allow 1-channel hema_channels so DeepLIIF G1 mask doesn't get broadcasted
+            hema_channels = 3
+            self.hparams.hema_channels = 3
+            print(f"[WARNING] DeepLIIF is enabled. Auto-setting hema_channels to 3.")
 
         # Generator
         self.generator = SPADEUNetGenerator(

@@ -45,15 +45,9 @@ class EdgeEncoder(nn.Module):
             self.register_buffer('sobel_x', sobel_x)
             self.register_buffer('sobel_y', sobel_y)
 
-        # Determine entry conv input channels
-        if input_channels == 1:
-            enc1_in_ch = 2  # Legacy: 2-ch Sobel (grad_x, grad_y)
-        else:
-            enc1_in_ch = input_channels  # DeepLIIF: 3-ch raw hematoxylin
-
         # Edge feature encoder → multi-scale features
         self.enc1 = nn.Sequential(  # 512→256, out: base_ch
-            nn.Conv2d(enc1_in_ch, base_ch, 4, stride=2, padding=1),
+            nn.Conv2d(2, base_ch, 4, stride=2, padding=1),
             nn.LeakyReLU(0.2, inplace=True),
         )
         self.enc2 = nn.Sequential(  # 256→128, out: base_ch*2
@@ -85,15 +79,14 @@ class EdgeEncoder(nn.Module):
                 64:  [B, base_ch*4, 64, 64]
                 32:  [B, base_ch*4, 32, 32]
         """
-        if self.input_channels == 1:
-            # Legacy path: Sobel edge detection on 1-ch H-channel
-            gray = (image + 1) / 2  # [B, 1, 512, 512] → [0, 1]
-            gx = F.conv2d(gray, self.sobel_x, padding=1)
-            gy = F.conv2d(gray, self.sobel_y, padding=1)
-            x = torch.cat([gx, gy], dim=1)  # [B, 2, 512, 512]
-        else:
-            # DeepLIIF path: pass 3-ch hematoxylin directly
-            x = (image + 1) / 2  # [B, 3, 512, 512] → [0, 1]
+        # Convert to grayscale [0, 1] mathematically regardless of channels
+        image_01 = (image + 1) / 2
+        gray = image_01.mean(dim=1, keepdim=True)  # [B, 1, 512, 512]
+
+        # Sobel edge detection always outputs exactly 2 channels
+        gx = F.conv2d(gray, self.sobel_x, padding=1)
+        gy = F.conv2d(gray, self.sobel_y, padding=1)
+        x = torch.cat([gx, gy], dim=1)  # [B, 2, 512, 512]
 
         # Multi-scale encoding
         e1 = self.enc1(x)   # [B, base_ch, 256, 256]
@@ -137,10 +130,8 @@ class MultiScaleEdgeEncoder(nn.Module):
             self.register_buffer('sobel_y', sobel_y)
 
         # Per-scale feature extractors
-        # Both modes produce 3-ch input to each scale block:
-        #   Legacy: 1-ch H + 2-ch Sobel = 3ch
-        #   DeepLIIF: 3-ch raw hematoxylin = 3ch
-        in_ch = 3
+        # Input: 3ch RGB + 2ch Sobel = 5ch at each scale
+        in_ch = 5
 
         # 512→512
         self.scale_512 = nn.Sequential(
@@ -184,24 +175,17 @@ class MultiScaleEdgeEncoder(nn.Module):
 
     def _prepare_at_scale(self, image_01, size):
         """Prepare input at a given scale.
-
-        For legacy (1-ch): downsample + Sobel → [B, 3, size, size]
-        For DeepLIIF (3-ch): just downsample → [B, 3, size, size]
+        Downsample, extract Sobel edges, return RGB+edges = 5ch.
         """
-        if self.input_channels == 1:
-            # Legacy: Sobel edge extraction at this scale
-            if size < image_01.shape[-1]:
-                h = F.interpolate(image_01, size=size, mode='bilinear', align_corners=False)
-            else:
-                h = image_01
-            gx = F.conv2d(h, self.sobel_x, padding=1)
-            gy = F.conv2d(h, self.sobel_y, padding=1)
-            return torch.cat([h, gx, gy], dim=1)  # [B, 3, size, size]
+        if size < image_01.shape[-1]:
+            h = F.interpolate(image_01, size=size, mode='bilinear', align_corners=False)
         else:
-            # DeepLIIF: just downsample the 3-ch hematoxylin
-            if size < image_01.shape[-1]:
-                return F.interpolate(image_01, size=size, mode='bilinear', align_corners=False)
-            return image_01
+            h = image_01
+            
+        gray = h.mean(dim=1, keepdim=True)
+        gx = F.conv2d(gray, self.sobel_x, padding=1)
+        gy = F.conv2d(gray, self.sobel_y, padding=1)
+        return torch.cat([h, gx, gy], dim=1)  # [B, 5, size, size]
 
     def forward(self, image):
         """

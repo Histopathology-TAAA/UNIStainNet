@@ -137,7 +137,8 @@ def main():
     )
 
     if args.deepliif_weights_path:
-        print(f"[INFO] DeepLIIF is enabled with {args.hema_channels}-ch configuration.")
+        args.hema_channels = 3
+        print(f"[WARNING] DeepLIIF is enabled. Auto-setting hema_channels to 3.")
 
     dm = MISTMultiStainCropDataModule(
         base_dir=args.data_dir,
