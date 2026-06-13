@@ -24,6 +24,7 @@ import json
 from pathlib import Path
 
 import torch
+import pytorch_lightning as pl
 import torch.nn.functional as F
 import timm
 import torchvision.transforms as transforms
@@ -41,6 +42,7 @@ from src.utils.metrics import (
     compute_iod_metrics,
     compute_he_h_ssim,
     compute_he_nmi,
+    compute_he_structure_metrics,
     save_sample_grid,
     composite_background,
 )
@@ -119,7 +121,7 @@ def generate_for_stain(model, uni_model, dataloader, stain_label, guidance_scale
 
             gen = model.generate(he, uni, stain_labels,
                                  guidance_scale=guidance_scale,
-                                 seed=seed + batch_idx)
+                                 seed=seed + batch_idx if seed is not None else None)
             gen = gen.float()
 
         if no_downcasting:
@@ -147,7 +149,11 @@ def main():
     parser.add_argument('--batch_size', type=int, default=8)
     parser.add_argument('--skip_uni_fid', action='store_true')
     parser.add_argument('--composite_bg', action='store_true')
+    parser.add_argument('--random_seed', action='store_true', help='Use a random seed instead of fixed seed 42')
     args = parser.parse_args()
+
+    if not args.random_seed:
+        pl.seed_everything(42, workers=True)
 
     if args.output_dir is None:
         ckpt_name = Path(args.checkpoint).stem
@@ -208,6 +214,7 @@ def main():
         gen, real, he, fnames = generate_for_stain(
             model, uni_model, test_loader, stain_label,
             guidance_scale=args.guidance_scale,
+            seed=None if args.random_seed else 42,
             spatial_pool_size=spatial_pool_size)
         print(f"Generated {len(gen)} images")
 
@@ -237,11 +244,13 @@ def main():
         print(f"  Computing HE-H SSIM and HE-NMI...")
         he_h_ssim = compute_he_h_ssim(gen, he, is_target_he=True, dab_extractor=dab_extractor)
         he_nmi = compute_he_nmi(gen, he, is_target_he=True, dab_extractor=dab_extractor)
+        he_struct_ssim = compute_he_structure_metrics(gen, he)
         stain_results['he_structure'] = {
             'he_h_ssim_mean': he_h_ssim['ssim_mean'],
             'he_h_ssim_std': he_h_ssim['ssim_std'],
             'he_nmi_mean': he_nmi['nmi_mean'],
             'he_nmi_std': he_nmi['nmi_std'],
+            'he_structure_ssim': he_struct_ssim['he_structure_ssim'],
         }
 
         # UNI-FID (per-stain)
@@ -259,12 +268,14 @@ def main():
         dab = stain_results['dab']
         he_struct = stain_results['he_structure']
         print(f"\n  {stain}: FID={iq['fid_inception']:.1f} | "
+              f"UNI-FID={iq.get('fid_uni', float('nan')):.1f} | "
               f"KID={iq['kid_mean_x1000']:.1f} | "
               f"LPIPS={iq['lpips_mean']:.3f} | "
               f"SSIM={iq['ssim_mean']:.3f} | "
               f"Pearson-r={dab.get('dab_pearson_r', 0):.3f} | "
               f"HE-H-SSIM={he_struct['he_h_ssim_mean']:.3f} | "
-              f"HE-NMI={he_struct['he_nmi_mean']:.3f}")
+              f"HE-NMI={he_struct['he_nmi_mean']:.3f} | "
+              f"HE-Struct-SSIM={he_struct['he_structure_ssim']:.3f}")
 
         # Explicitly free memory before next stain
         del gen, real, he, fnames
@@ -284,7 +295,7 @@ def main():
                     'ssim_mean', 'psnr_mean']
     dab_keys = ['dab_mae_overall', 'dab_pearson_r', 'dab_kl', 'dab_jsd']
     iod_keys = ['miod_diff', 'miod_abs_diff']
-    he_struct_keys = ['he_h_ssim_mean', 'he_nmi_mean']
+    he_struct_keys = ['he_h_ssim_mean', 'he_nmi_mean', 'he_structure_ssim']
 
     macro = {}
     for key in metric_keys:
