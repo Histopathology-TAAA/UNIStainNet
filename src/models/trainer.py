@@ -151,6 +151,10 @@ class UNIStainNetTrainer(pl.LightningModule):
         label_names=None,
         # Case A/B H-channel training switch
         case_a_prob=0.0,
+        # Case A annealing schedule
+        case_a_warmup_epochs=0,
+        case_a_anneal_epochs=0,
+        case_a_end_prob=0.05,
         # Spatial Alignment Network (STN)
         use_alignment=False,
         learnable_sobel=False,
@@ -737,19 +741,51 @@ class UNIStainNetTrainer(pl.LightningModule):
 
             return loss / len(gen_feats)
 
+    def _get_case_a_prob(self):
+        """Compute the effective Case A probability for the current epoch.
+        
+        Schedule:
+          - Epochs [0, warmup): constant at case_a_prob (starting value)
+          - Epochs [warmup, warmup+anneal): cosine decay from case_a_prob → case_a_end_prob
+          - Epochs [warmup+anneal, ∞): constant at case_a_end_prob
+        
+        If anneal_epochs == 0, returns the static case_a_prob (no annealing).
+        """
+        import math
+        warmup = getattr(self.hparams, 'case_a_warmup_epochs', 0)
+        anneal = getattr(self.hparams, 'case_a_anneal_epochs', 0)
+        start_prob = self.hparams.case_a_prob
+        end_prob = getattr(self.hparams, 'case_a_end_prob', 0.05)
+        
+        # No annealing: return static probability
+        if anneal == 0:
+            return start_prob
+        
+        epoch = self.current_epoch
+        
+        if epoch < warmup:
+            # Warmup phase: full IHC
+            return start_prob
+        elif epoch < warmup + anneal:
+            # Annealing phase: cosine decay
+            progress = (epoch - warmup) / anneal  # 0.0 → 1.0
+            # Cosine schedule: smoother than linear, spends more time near start and end
+            cosine_factor = 0.5 * (1.0 + math.cos(math.pi * progress))  # 1.0 → 0.0
+            return end_prob + (start_prob - end_prob) * cosine_factor
+        else:
+            # Post-anneal: memory anchor
+            return end_prob
+
     def training_step(self, batch, batch_idx):
         he, her2, he_h, ihc_h, uni_or_crops, labels, fnames = batch
         opt_g, opt_d = self.optimizers()
 
         # ----------------------------------------------------------------
-        # Case A / Case B selection
+        # Case A / Case B selection with automatic annealing
         # ----------------------------------------------------------------
-        # Case A: edge encoder receives IHC H-channel (true target structure)
-        #         he_edge_weight loss is against IHC H-channel at full-res only
-        # Case B: edge encoder receives H&E H-channel (default behaviour)
-        #         he_edge_weight loss is multi-scale against H&E H-channel
-        use_case_a = (self.hparams.case_a_prob > 0.0 and
-                      torch.rand(1).item() < self.hparams.case_a_prob)
+        effective_case_a_prob = self._get_case_a_prob()
+        use_case_a = (effective_case_a_prob > 0.0 and
+                      torch.rand(1).item() < effective_case_a_prob)
                       
         # Apply augmentation to IHC H-channel to destroy DAB ghosting
         ihc_aug_prob = getattr(self.hparams, 'ihc_augmentation', 0.0)
@@ -1123,6 +1159,7 @@ class UNIStainNetTrainer(pl.LightningModule):
         self.log('train/adversarial', loss_adv, prog_bar=False)
         self.log('train/lr_scale', lr_scale, prog_bar=False)
         self.log('train/case_a_active', float(use_case_a), prog_bar=False)
+        self.log('train/case_a_prob', effective_case_a_prob, prog_bar=False)
         if self.crop_discriminator is not None:
             self.log('train/crop_adv_g', loss_crop_adv, prog_bar=False)
             self.log('train/crop_adv_d', loss_crop_d, prog_bar=False)
@@ -1269,7 +1306,7 @@ class UNIStainNetTrainer(pl.LightningModule):
 
         # ---- Case A generation (visual only, no metrics) ----
         gen_a_01 = None
-        if self.hparams.case_a_prob > 0:
+        if self._get_case_a_prob() > 0:
             # Case A edge_input uses target structure
             with torch.no_grad():
                 generated_a = self.generator_ema(he, uni, labels,

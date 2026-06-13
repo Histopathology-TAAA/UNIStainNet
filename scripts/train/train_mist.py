@@ -38,9 +38,19 @@ def main():
     parser.add_argument('--resume_from', type=str, default=None,
                         help='Resume from checkpoint path')
     parser.add_argument('--case_a_prob', type=float, default=0.0,
-                        help='Probability of choosing Case A (IHC H-channel as edge input) '
-                             'per training step. 0.0=always Case B, 1.0=always Case A. '
-                             'Default: 0.0 (pure Case B, original behaviour)')
+                        help='Base probability of Case A. When annealing is enabled, this is '
+                             'the STARTING probability (typically 1.0). Default: 0.0')
+    parser.add_argument('--case_a_warmup_epochs', type=int, default=0,
+                        help='Number of epochs to keep case_a_prob at its starting value '
+                             'before annealing begins. Set to e.g. 40 for 40 epochs of '
+                             'pure IHC structure learning. Default: 0 (no warmup)')
+    parser.add_argument('--case_a_anneal_epochs', type=int, default=0,
+                        help='Number of epochs over which to linearly decay case_a_prob '
+                             'from starting value to case_a_end_prob. 0 = no annealing '
+                             '(static probability). Default: 0')
+    parser.add_argument('--case_a_end_prob', type=float, default=0.05,
+                        help='Final case_a_prob after annealing completes. '
+                             'Small value like 0.05 acts as memory anchor. Default: 0.05')
     parser.add_argument('--use_alignment', action='store_true',
                         help='Enable Spatial Alignment Network (STN) for fixing misalignment in Case A.')
     parser.add_argument('--edge_encoder', type=str, default='v2', choices=['v1', 'v2', 'none'],
@@ -121,8 +131,11 @@ def main():
         # On-the-fly UNI extraction
         extract_uni_on_the_fly=True,
         uni_spatial_pool_size=32,
-        # Case A/B H-channel training switch
+        # Case A/B H-channel training switch (with optional annealing)
         case_a_prob=args.case_a_prob,
+        case_a_warmup_epochs=args.case_a_warmup_epochs,
+        case_a_anneal_epochs=args.case_a_anneal_epochs,
+        case_a_end_prob=args.case_a_end_prob,
         # Spatial Alignment Network (STN)
         use_alignment=args.use_alignment,
         learnable_sobel=args.learnable_sobel,
