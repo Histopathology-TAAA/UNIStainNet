@@ -28,3 +28,7 @@ env/
 # DeepLIIF Weights
 model-server/
 deepliif-weights/
+
+# Datasets
+MIST/
+
