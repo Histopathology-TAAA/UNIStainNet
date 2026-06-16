@@ -62,6 +62,15 @@ class MISTMultiStainCropDataset(CropPairedDataset):
         )
 
         self.base_dir = Path(base_dir)
+        
+        # Auto-correct accidental absolute paths (e.g. /MIST -> MIST)
+        if not self.base_dir.exists():
+            stripped = Path(str(self.base_dir).lstrip('/'))
+            if stripped.exists():
+                self.base_dir = stripped
+                
+        if not self.base_dir.exists():
+            raise FileNotFoundError(f"MIST base directory not found at: {self.base_dir} (or ./{self.base_dir})")
         self.samples = []  # (he_path, ihc_path, he_h_path, ihc_h_path, stain_label)
 
         split_he = 'trainA' if split == 'train' else 'valA'

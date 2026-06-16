@@ -157,7 +157,13 @@ def main():
         print(f"{'='*50}")
 
         # Data at native 1024
-        stain_data_dir = Path(args.data_dir) / stain
+        base_data_dir = Path(args.data_dir)
+        if not base_data_dir.exists():
+            stripped = Path(str(base_data_dir).lstrip('/'))
+            if stripped.exists():
+                base_data_dir = stripped
+                
+        stain_data_dir = base_data_dir / stain
         if stain_data_dir.exists() and not (stain_data_dir / 'valA').exists():
             for subdir in stain_data_dir.iterdir():
                 if subdir.is_dir() and (subdir / 'valA').exists():
