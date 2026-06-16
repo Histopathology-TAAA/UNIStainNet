@@ -46,6 +46,11 @@ from src.utils.metrics import (
     save_sample_grid,
     composite_background,
 )
+from src.utils.ki67_evaluator import (
+    Ki67ClinicalEvaluator,
+    compute_ki67_summary,
+    print_ki67_summary,
+)
 
 
 def load_uni_model():
@@ -150,6 +155,10 @@ def main():
     parser.add_argument('--skip_uni_fid', action='store_true')
     parser.add_argument('--composite_bg', action='store_true')
     parser.add_argument('--random_seed', action='store_true', help='Use a random seed instead of fixed seed 42')
+    parser.add_argument('--dab_threshold', type=float, default=0.15,
+                        help='DAB optical-density threshold for Ki67 positive cell calling. '
+                             'Lower = more sensitive.  Adjust per-dataset for white-balance '
+                             'and contrast differences.  Default: 0.15')
     args = parser.parse_args()
 
     if not args.random_seed:
@@ -187,6 +196,12 @@ def main():
     }
 
     dab_extractor = DABExtractor(device='cpu')
+
+    # Ki67 Clinical Evaluator (lazy — StarDist loads on first call)
+    ki67_evaluator = None
+    if 'Ki67' in args.stains:
+        ki67_evaluator = Ki67ClinicalEvaluator(dab_threshold=args.dab_threshold)
+        print(f"[INFO] Ki67 clinical evaluator enabled (DAB threshold={args.dab_threshold})")
 
     # Per-stain evaluation
     for stain in args.stains:
@@ -261,6 +276,25 @@ def main():
             except Exception as e:
                 print(f"    UNI-FID skipped: {e}")
 
+        # Ki67 Clinical Evaluation (cell-level metrics)
+        if stain == 'Ki67' and ki67_evaluator is not None:
+            print(f"  Computing Ki67 clinical metrics (StarDist)...")
+            real_li_scores = []
+            fake_li_scores = []
+
+            N = gen.shape[0]
+            for i in tqdm(range(N), desc="  Ki67 scoring"):
+                real_cells, real_pos, real_li = ki67_evaluator.compute_labeling_index(real[i])
+                fake_cells, fake_pos, fake_li = ki67_evaluator.compute_labeling_index(gen[i])
+
+                real_li_scores.append(real_li)
+                fake_li_scores.append(fake_li)
+
+            # Compute global summary
+            ki67_summary = compute_ki67_summary(real_li_scores, fake_li_scores)
+            print_ki67_summary(ki67_summary)
+            stain_results['ki67_clinical'] = ki67_summary
+
         results['per_stain'][stain] = stain_results
 
         # Print per-stain summary
@@ -276,6 +310,12 @@ def main():
               f"HE-H-SSIM={he_struct['he_h_ssim_mean']:.3f} | "
               f"HE-NMI={he_struct['he_nmi_mean']:.3f} | "
               f"HE-Struct-SSIM={he_struct['he_structure_ssim']:.3f}")
+        if 'ki67_clinical' in stain_results:
+            ki = stain_results['ki67_clinical']
+            print(f"         Ki67: MAE={ki['ki67_li_mae']:.2f}% | "
+                  f"r={ki['ki67_li_pearson_r']:.3f} | "
+                  f"Concordance={ki['ki67_tier_concordance']*100:.1f}% | "
+                  f"Kappa={ki['ki67_tier_kappa']:.3f}")
 
         # Explicitly free memory before next stain
         del gen, real, he, fnames
@@ -296,6 +336,7 @@ def main():
     dab_keys = ['dab_mae_overall', 'dab_pearson_r', 'dab_kl', 'dab_jsd']
     iod_keys = ['miod_diff', 'miod_abs_diff']
     he_struct_keys = ['he_h_ssim_mean', 'he_nmi_mean', 'he_structure_ssim']
+    ki67_keys = ['ki67_li_mae', 'ki67_li_pearson_r', 'ki67_tier_concordance', 'ki67_tier_kappa']
 
     macro = {}
     for key in metric_keys:
@@ -318,6 +359,13 @@ def main():
                 for s in args.stains]
         macro[key] = float(np.mean([v for v in vals if not np.isnan(v)]))
 
+    # Ki67 clinical metrics (only present for Ki67 stain)
+    for key in ki67_keys:
+        vals = [results['per_stain'][s].get('ki67_clinical', {}).get(key, float('nan'))
+                for s in args.stains]
+        valid = [v for v in vals if not np.isnan(v)]
+        macro[key] = float(np.mean(valid)) if valid else float('nan')
+
     results['macro_average'] = macro
 
     # Print table
@@ -328,7 +376,13 @@ def main():
     print(header)
     print("-" * len(header))
 
-    for key in metric_keys + dab_keys + iod_keys + he_struct_keys:
+    all_table_keys = metric_keys + dab_keys + iod_keys + he_struct_keys
+    # Append Ki67 rows only when Ki67 was evaluated
+    has_ki67 = any('ki67_clinical' in results['per_stain'].get(s, {}) for s in args.stains)
+    if has_ki67:
+        all_table_keys += ki67_keys
+
+    for key in all_table_keys:
         row = f"{key:<20s}"
         for s in args.stains:
             if key in ['fid_inception', 'fid_uni', 'kid_mean_x1000', 'lpips_mean', 'lpips_128_mean', 'ssim_mean', 'psnr_mean']:
@@ -337,9 +391,11 @@ def main():
                 src = 'dab'
             elif key.startswith('miod'):
                 src = 'iod'
+            elif key.startswith('ki67'):
+                src = 'ki67_clinical'
             else:
                 src = 'he_structure'
-            val = results['per_stain'][s][src].get(key, float('nan'))
+            val = results['per_stain'][s].get(src, {}).get(key, float('nan'))
             row += f" {val:>8.3f}"
         row += f" {macro.get(key, float('nan')):>8.3f}"
         print(row)

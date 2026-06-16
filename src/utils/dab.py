@@ -133,3 +133,60 @@ class DABExtractor:
             raise ValueError(f"Unknown normalization: {normalize}")
 
         return h
+
+class HEExtractor:
+    """Extract Hematoxylin and Eosin stain intensity from H&E images using color deconvolution.
+
+    Uses the standard Ruifrok & Johnston H&E stain matrix.
+    This is DIFFERENT from DABExtractor — H&E images have Eosin (pink)
+    where IHC images have DAB (brown), so the deconvolution vectors are different.
+    """
+    def __init__(self, device='cuda'):
+        self.device = device
+        # Standard H&E stain matrix
+        self.stain_matrix = torch.tensor([
+            [0.644, 0.716, 0.266],  # Hematoxylin (blue)
+            [0.092, 0.954, 0.283],  # Eosin (pink)
+            [0.635, 0.001, 0.771],  # Residual
+        ], device=device, dtype=torch.float32)
+
+        # Inverse for deconvolution
+        self.deconv_matrix = torch.linalg.inv(self.stain_matrix.T)
+
+    def rgb_to_od(self, rgb_images: torch.Tensor) -> torch.Tensor:
+        """Convert RGB [0,1] to optical density: OD = -log10(I/I0)."""
+        rgb_images = rgb_images.clamp(1e-6, 1.0)
+        return -torch.log10(rgb_images + 1e-6)
+
+    def extract_hematoxylin_intensity(
+        self,
+        images: torch.Tensor,
+        normalize: str = "max"
+    ) -> torch.Tensor:
+        B, C, H_sz, W = images.shape
+        assert C == 3, "Input must be RGB images"
+
+        if images.min() < 0:
+            images = (images + 1.0) / 2.0
+
+        od = self.rgb_to_od(images)
+        od_flat = od.permute(0, 2, 3, 1).reshape(-1, 3)
+        deconv_matrix = self.deconv_matrix.to(od_flat.device)
+
+        concentrations = od_flat @ deconv_matrix.T
+        h_flat = concentrations[:, 0]  # Hematoxylin channel (index 0)
+
+        h_intensity = h_flat.reshape(B, H_sz, W)
+        h = F.softplus(h_intensity, beta=5.0)
+
+        if normalize == "max" or normalize is True:
+            mx = h.amax(dim=(1, 2), keepdim=True).clamp(min=1e-6)
+            h = h / mx
+        elif normalize == "meanstd":
+            mean = h.mean(dim=(1, 2), keepdim=True)
+            std = h.std(dim=(1, 2), keepdim=True).clamp(min=1e-6)
+            h = (h - mean) / std
+        elif normalize == "none" or normalize is False:
+            pass
+
+        return h
