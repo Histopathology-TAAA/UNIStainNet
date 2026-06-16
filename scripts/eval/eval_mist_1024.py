@@ -158,8 +158,11 @@ def main():
 
         # Data at native 1024
         stain_data_dir = Path(args.data_dir) / stain
-        if (stain_data_dir / 'TrainValAB').exists():
-            stain_data_dir = stain_data_dir / 'TrainValAB'
+        if stain_data_dir.exists() and not (stain_data_dir / 'valA').exists():
+            for subdir in stain_data_dir.iterdir():
+                if subdir.is_dir() and (subdir / 'valA').exists():
+                    stain_data_dir = subdir
+                    break
         dm = MISTCropDataModule(
             data_dir=str(stain_data_dir),
             batch_size=args.batch_size,

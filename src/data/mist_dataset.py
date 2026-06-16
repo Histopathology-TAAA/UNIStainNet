@@ -76,8 +76,11 @@ class MISTMultiStainCropDataset(CropPairedDataset):
 
             stain_label = STAIN_TO_LABEL[stain]
             stain_dir = self.base_dir / stain
-            if (stain_dir / 'TrainValAB').exists():
-                stain_dir = stain_dir / 'TrainValAB'
+            if stain_dir.exists() and not (stain_dir / split_he).exists():
+                for subdir in stain_dir.iterdir():
+                    if subdir.is_dir() and (subdir / split_he).exists():
+                        stain_dir = subdir
+                        break
                 
             he_dir = stain_dir / split_he
             ihc_dir = stain_dir / split_ihc
