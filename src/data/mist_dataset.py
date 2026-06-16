@@ -75,8 +75,6 @@ class MISTMultiStainCropDataset(CropPairedDataset):
 
         split_he = 'trainA' if split == 'train' else 'valA'
         split_ihc = 'trainB' if split == 'train' else 'valB'
-        split_he_h = split_he + '-H'
-        split_ihc_h = split_ihc + '-H'
         valid_exts = ('.jpg', '.jpeg', '.png')
 
         for stain in stains:
@@ -93,43 +91,28 @@ class MISTMultiStainCropDataset(CropPairedDataset):
                 
             he_dir = stain_dir / split_he
             ihc_dir = stain_dir / split_ihc
-            he_h_dir = stain_dir / split_he_h
-            ihc_h_dir = stain_dir / split_ihc_h
 
             if not he_dir.exists():
                 raise FileNotFoundError(f"H&E directory not found: {he_dir}")
             if not ihc_dir.exists():
                 raise FileNotFoundError(f"IHC directory not found: {ihc_dir}")
-            if not he_h_dir.exists():
-                raise FileNotFoundError(f"H&E H-channel directory not found: {he_h_dir}")
-            if not ihc_h_dir.exists():
-                raise FileNotFoundError(f"IHC H-channel directory not found: {ihc_h_dir}")
 
             he_files = sorted([f for f in os.listdir(he_dir)
                                if f.lower().endswith(valid_exts)])
             ihc_files = sorted([f for f in os.listdir(ihc_dir)
                                 if f.lower().endswith(valid_exts)])
-            he_h_files = sorted([f for f in os.listdir(he_h_dir)
-                                 if f.lower().endswith(valid_exts)])
-            ihc_h_files = sorted([f for f in os.listdir(ihc_h_dir)
-                                  if f.lower().endswith(valid_exts)])
 
             # Match by stem (H&E may be .jpg, IHC may be .png)
             he_stems = {Path(f).stem: f for f in he_files}
             ihc_stems = {Path(f).stem: f for f in ihc_files}
-            he_h_stems = {Path(f).stem: f for f in he_h_files}
-            ihc_h_stems = {Path(f).stem: f for f in ihc_h_files}
             common = sorted(
                 set(he_stems.keys()) & set(ihc_stems.keys())
-                & set(he_h_stems.keys()) & set(ihc_h_stems.keys())
             )
 
             for stem in common:
                 self.samples.append((
                     he_dir / he_stems[stem],
                     ihc_dir / ihc_stems[stem],
-                    he_h_dir / he_h_stems[stem],
-                    ihc_h_dir / ihc_h_stems[stem],
                     stain_label,
                 ))
 
@@ -137,7 +120,7 @@ class MISTMultiStainCropDataset(CropPairedDataset):
 
         # Per-stain counts for logging
         from collections import Counter
-        dist = Counter(s[4] for s in self.samples)
+        dist = Counter(s[2] for s in self.samples)
         stain_counts = {LABEL_TO_STAIN[k]: v for k, v in sorted(dist.items())}
         print(f"Multi-Stain Crop Dataset ({split}): {len(self.samples)} total | {stain_counts}")
 
@@ -145,12 +128,12 @@ class MISTMultiStainCropDataset(CropPairedDataset):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        he_path, ihc_path, he_h_path, ihc_h_path, stain_label = self.samples[idx]
+        he_path, ihc_path, stain_label = self.samples[idx]
         he_img = Image.open(he_path).convert('RGB')
         ihc_img = Image.open(ihc_path).convert('RGB')
-        # H-channel images are single-channel grayscale PNGs
-        he_h_img = Image.open(he_h_path).convert('L')
-        ihc_h_img = Image.open(ihc_h_path).convert('L')
+        # Generate H-channel images on the fly by converting to grayscale
+        he_h_img = he_img.convert('L')
+        ihc_h_img = ihc_img.convert('L')
         return self._process_pair_with_h(
             he_img, ihc_img, he_h_img, ihc_h_img, stain_label, he_path.name
         )
