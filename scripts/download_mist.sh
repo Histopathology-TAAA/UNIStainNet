@@ -17,7 +17,7 @@ echo "============================================================"
 # Check if it's a dataset or model repository
 echo "Detecting repository type..."
 REPO_TYPE="dataset"
-if huggingface-cli download "$REPO_ID" "${FILES[0]}" --repo-type dataset --local-dir "$TARGET_DIR" --local-dir-use-symlinks False > /dev/null 2>&1; then
+if hf download "$REPO_ID" "${FILES[0]}" --repo-type dataset --local-dir "$TARGET_DIR" > /dev/null 2>&1; then
     echo "[INFO] Detected Hugging Face Dataset repository."
 else
     echo "[INFO] Not a dataset repo. Trying as a Model repository..."
@@ -29,10 +29,9 @@ for FILE in "${FILES[@]}"; do
     echo "Downloading $FILE..."
     
     # Download the file locally to the target directory
-    huggingface-cli download "$REPO_ID" "$FILE" \
+    hf download "$REPO_ID" "$FILE" \
         --repo-type "$REPO_TYPE" \
-        --local-dir "$TARGET_DIR" \
-        --local-dir-use-symlinks False
+        --local-dir "$TARGET_DIR"
 
     echo "Extracting $FILE..."
     # Use python's built-in zip extractor to ensure compatibility
