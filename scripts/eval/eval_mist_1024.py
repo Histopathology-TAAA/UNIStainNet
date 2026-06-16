@@ -157,7 +157,9 @@ def main():
         print(f"{'='*50}")
 
         # Data at native 1024
-        stain_data_dir = Path(args.data_dir) / stain / 'TrainValAB'
+        stain_data_dir = Path(args.data_dir) / stain
+        if (stain_data_dir / 'TrainValAB').exists():
+            stain_data_dir = stain_data_dir / 'TrainValAB'
         dm = MISTCropDataModule(
             data_dir=str(stain_data_dir),
             batch_size=args.batch_size,

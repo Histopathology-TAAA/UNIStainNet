@@ -75,10 +75,14 @@ class MISTMultiStainCropDataset(CropPairedDataset):
                 raise ValueError(f"Unknown stain: {stain}. Must be one of {list(STAIN_TO_LABEL.keys())}")
 
             stain_label = STAIN_TO_LABEL[stain]
-            he_dir = self.base_dir / stain / split_he
-            ihc_dir = self.base_dir / stain / split_ihc
-            he_h_dir = self.base_dir / stain / split_he_h
-            ihc_h_dir = self.base_dir / stain / split_ihc_h
+            stain_dir = self.base_dir / stain
+            if (stain_dir / 'TrainValAB').exists():
+                stain_dir = stain_dir / 'TrainValAB'
+                
+            he_dir = stain_dir / split_he
+            ihc_dir = stain_dir / split_ihc
+            he_h_dir = stain_dir / split_he_h
+            ihc_h_dir = stain_dir / split_ihc_h
 
             if not he_dir.exists():
                 raise FileNotFoundError(f"H&E directory not found: {he_dir}")
