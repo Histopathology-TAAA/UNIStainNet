@@ -4,6 +4,8 @@ from pathlib import Path
 import numpy as np
 import cv2
 from PIL import Image
+import random
+import scipy.ndimage as ndi
 
 # Import the existing evaluator logic
 import sys
@@ -22,27 +24,32 @@ def draw_visual_evaluation(img_np, labels, dab_map, threshold):
     
     unique_ids = np.unique(labels)
     unique_ids = unique_ids[unique_ids != 0]
-    
-    pos_count = 0
     total_count = len(unique_ids)
     
-    for cell_id in unique_ids:
-        # Create binary mask for this specific cell
-        mask = (labels == cell_id).astype(np.uint8)
+    if total_count > 0:
+        # ULTRA-FAST VECTORIZED MEAN CALCULATION
+        # This computes the mean DAB for every single cell instantly in C
+        mean_dabs = ndi.mean(dab_map, labels, index=unique_ids)
         
-        # Calculate mean DAB
-        mean_dab = dab_map[mask == 1].mean()
+        # Determine positive vs negative based on threshold
+        pos_mask_ids = unique_ids[mean_dabs > threshold]
+        neg_mask_ids = unique_ids[mean_dabs <= threshold]
         
-        # Determine color
-        if mean_dab > threshold:
-            color = (0, 0, 255)  # Red in BGR (Positive)
-            pos_count += 1
-        else:
-            color = (255, 0, 0)  # Blue in BGR (Negative)
-            
-        # Draw contour
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        cv2.drawContours(overlay, contours, -1, color, 1)
+        # Create global masks
+        pos_mask = np.isin(labels, pos_mask_ids).astype(np.uint8)
+        neg_mask = np.isin(labels, neg_mask_ids).astype(np.uint8)
+        
+        pos_count = len(pos_mask_ids)
+        
+        # Find contours globally
+        pos_contours, _ = cv2.findContours(pos_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        neg_contours, _ = cv2.findContours(neg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        # Draw all contours at once
+        cv2.drawContours(overlay, pos_contours, -1, (0, 0, 255), 1) # Red in BGR (Positive)
+        cv2.drawContours(overlay, neg_contours, -1, (255, 0, 0), 1) # Blue in BGR (Negative)
+    else:
+        pos_count = 0
         
     li = (pos_count / total_count * 100) if total_count > 0 else 0.0
     
@@ -73,6 +80,8 @@ def main():
     star_model = evaluator._load_star_model()
     
     image_paths = sorted([p for p in Path(args.input_dir).rglob('*') if p.suffix.lower() in ['.png', '.jpg', '.jpeg']])
+    random.seed(42) # Ensure reproducibility
+    random.shuffle(image_paths)
     image_paths = image_paths[:args.max_images]
     
     print(f"[INFO] Found {len(image_paths)} images. Processing with thresholds: {args.thresholds}...")
