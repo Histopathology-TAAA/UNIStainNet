@@ -78,9 +78,13 @@ def main():
         out_name = f"{img_path.stem}_DeepLIIF_LI{li:.1f}.jpg"
         out_path = Path(args.output_dir) / out_name
         
-        # Convert back to RGB for saving
+        # Convert back to RGB for saving overlay
         overlay_rgb = cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB)
         Image.fromarray(overlay_rgb).save(out_path)
+        
+        # Save the RAW segmentation mask to see what DeepLIIF generated!
+        raw_seg_path = Path(args.output_dir) / f"{img_path.stem}_RAW_SEG.jpg"
+        Image.fromarray(seg_np).save(raw_seg_path)
             
     print(f"\n[SUCCESS] DeepLIIF Visualizations saved to {args.output_dir}")
     print("Please inspect the images. RED contours = Positive, BLUE contours = Negative.")
