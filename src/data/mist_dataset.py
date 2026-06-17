@@ -153,7 +153,7 @@ class MISTMultiStainCropDataset(CropPairedDataset):
 
         # Per-stain counts for logging
         from collections import Counter
-        dist = Counter(s[2] for s in self.samples)
+        dist = Counter(s[-1] for s in self.samples)
         stain_counts = {LABEL_TO_STAIN[k]: v for k, v in sorted(dist.items())}
         print(f"Multi-Stain Crop Dataset ({split}): {len(self.samples)} total | {stain_counts}")
 
