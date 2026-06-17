@@ -41,42 +41,61 @@ class DeepLIIFStainer(nn.Module):
     def _load_model(self, device):
         """Instantiate and load DeepLIIF generator weights."""
         if self._model is not None:
-            return self._model
+            return self._model.to(device)
 
-        # Load pretrained weights first to inspect the shape
-        if not os.path.isfile(self._weights_path):
-            raise FileNotFoundError(
-                f"DeepLIIF weights not found at: {self._weights_path}\n"
-                "Download from: https://zenodo.org/record/4751737"
-            )
+        if not os.path.exists(self._weights_path):
+            raise FileNotFoundError(f"DeepLIIF weights not found at {self._weights_path}")
 
-        state_dict = torch.load(self._weights_path, map_location='cpu')
-        
-        # Detect whether this is a 15-channel multi-task generator or a 3-channel single-modality generator (like latest_net_G1.pth)
-        # We look at the final convolution weight shape: [out_channels, in_channels, k, k]
-        final_layer_key = 'model.26.weight' if 'model.26.weight' in state_dict else list(state_dict.keys())[-2]
-        output_nc = state_dict[final_layer_key].shape[0]
-        self._output_nc = output_nc
+        # Disable bloating stdout from DeepLIIF
+        import sys
+        import io
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
 
-        # Import from the cloned deepliif package (bloated imports have been disabled upstream)
-        from deepliif.models.networks import define_G
+        try:
+            from deepliif.models.networks import define_G
+            state_dict = torch.load(self._weights_path, map_location=device)
+            
+            # Find output_nc by looking at the last convolution weight
+            # U-Net usually ends with model.model.8.weight or similar
+            weight_keys = [k for k in state_dict.keys() if k.endswith('.weight')]
+            final_layer_key = weight_keys[-1] if weight_keys else list(state_dict.keys())[-2]
+            output_nc = state_dict[final_layer_key].shape[0]
+            self._output_nc = output_nc
 
-        model = define_G(
-            input_nc=3, output_nc=output_nc, ngf=64,
-            netG='resnet_9blocks', norm='batch',
-            use_dropout=True, init_type='normal',
-            init_gain=0.02, gpu_ids=[],
-            padding_type='zero'
-        )
+            keys_str = " ".join(state_dict.keys())
+            if "model.model.1.model" in keys_str:
+                # Highly nested structure implies U-Net
+                candidates = ['unet_512_attention', 'unet_512', 'unet_256', 'unet_128']
+            else:
+                candidates = ['resnet_9blocks', 'resnet_6blocks']
 
-        model.load_state_dict(state_dict)
-        model = model.to(device)
-        model.eval()
-        model.requires_grad_(False)
+            model = None
+            last_err = None
+            for netG in candidates:
+                try:
+                    temp_model = define_G(
+                        input_nc=3, output_nc=output_nc, ngf=64,
+                        netG=netG, norm='instance',
+                        use_dropout=False, init_type='normal', init_gain=0.02,
+                        gpu_ids=[]
+                    )
+                    temp_model.load_state_dict(state_dict)
+                    model = temp_model
+                    break
+                except Exception as e:
+                    last_err = e
+                    continue
+            
+            if model is None:
+                raise RuntimeError(f"Could not load state_dict with any candidate architecture. Last Error: {last_err}")
 
-        n_params = sum(p.numel() for p in model.parameters())
-        print(f"[DeepLIIFStainer] Loaded pretrained generator ({output_nc} output channels): {n_params:,} params")
-        print(f"[DeepLIIFStainer] Weights: {self._weights_path}")
+            model.eval()
+            model.to(device)
+            
+        finally:
+            # Restore stdout
+            sys.stdout = old_stdout
 
         self._model = model
         return model
