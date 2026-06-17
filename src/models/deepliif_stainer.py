@@ -57,10 +57,13 @@ class DeepLIIFStainer(nn.Module):
             state_dict = torch.load(self._weights_path, map_location=device)
             
             # Find output_nc by looking at the last convolution weight
-            # U-Net usually ends with model.model.8.weight or similar
+            # U-Net usually ends with model.model.8.weight or similar, which is ConvTranspose2d
+            # Conv2d weights: [out, in, k, k]
+            # ConvTranspose2d weights: [in, out, k, k]
             weight_keys = [k for k in state_dict.keys() if k.endswith('.weight')]
             final_layer_key = weight_keys[-1] if weight_keys else list(state_dict.keys())[-2]
-            output_nc = state_dict[final_layer_key].shape[0]
+            shape = state_dict[final_layer_key].shape
+            output_nc = shape[0] if shape[0] in [1, 3, 15] else shape[1]
             self._output_nc = output_nc
 
             keys_str = " ".join(state_dict.keys())
