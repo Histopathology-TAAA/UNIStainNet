@@ -36,7 +36,7 @@ Image.MAX_IMAGE_PIXELS = None
 import numpy as np
 # from dask import delayed, compute
 
-# from deepliif.util import *
+from deepliif.util import disable_batchnorm_tracking_stats, chunker
 # from deepliif.util.util import tensor_to_pil
 # from deepliif.data import transform
 # from deepliif.postprocessing import compute_final_results, compute_cell_results, to_array
