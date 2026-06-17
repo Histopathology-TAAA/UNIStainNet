@@ -44,10 +44,12 @@ class Ki67ClinicalEvaluator:
     ], dtype=np.float64)
 
     def __init__(self, dab_threshold: float = 0.15,
-                 star_model_name: str = '2D_versatile_he'):
+                 star_model_name: str = '2D_versatile_he',
+                 deepliif_stainer=None):
         self.dab_threshold = dab_threshold
         self._star_model_name = star_model_name
         self._star_model = None
+        self._deepliif_stainer = deepliif_stainer
 
         # Pre-compute the pseudo-inverse of the stain matrix once
         # stain_matrix is (2, 3); we need (3, 2) pinv for deconvolution
@@ -125,24 +127,64 @@ class Ki67ClinicalEvaluator:
 
         img_np = np.clip(img_np, 0.0, 1.0).astype(np.float32)
 
-        # ── 2. StarDist nuclear segmentation ──────────────────────────
-        star_model = self._load_star_model()
-        # StarDist expects uint8 [0, 255] or float [0, 1] depending on
-        # the model.  The versatile_he model ships with its own normalizer.
-        labels, _ = star_model.predict_instances(img_np)
-        # `labels` is (H, W) int32, where 0 = background, 1..N = cells
+        # ── 2. DeepLIIF Segmentation vs StarDist ──────────────────────
+        if self._deepliif_stainer is not None:
+            # Try to use DeepLIIF Segmentation
+            try:
+                import torch
+                # DeepLIIF expects [1, 3, H, W] in [-1, 1]
+                img_tensor = torch.from_numpy(img_np).permute(2, 0, 1).unsqueeze(0) * 2.0 - 1.0
+                
+                # Extract segmentation
+                seg_mask = self._deepliif_stainer.extract_segmentation(img_tensor)
+                
+                # Convert back to numpy [0, 255]
+                seg_np = ((seg_mask.squeeze(0).permute(1, 2, 0).cpu().numpy() + 1.0) / 2.0 * 255).astype(np.uint8)
+                
+                # In DeepLIIF Seg masks:
+                # Positive cells are distinctly Red/Brown/Cyan depending on the training setup.
+                # Usually: Blue channel > 150 = Negative (Hematoxylin)
+                # Red channel > 150 = Positive (Ki67/DAB)
+                
+                red_channel = seg_np[:, :, 0]
+                blue_channel = seg_np[:, :, 2]
+                
+                pos_mask = (red_channel > 150) & (blue_channel < 100)
+                neg_mask = (blue_channel > 150) & (red_channel < 100)
+                
+                import cv2
+                _, pos_labels = cv2.connectedComponents(pos_mask.astype(np.uint8))
+                _, neg_labels = cv2.connectedComponents(neg_mask.astype(np.uint8))
+                
+                positive_cells = len(np.unique(pos_labels)) - 1 # Subtract background
+                negative_cells = len(np.unique(neg_labels)) - 1
+                total_cells = positive_cells + negative_cells
+                
+                if total_cells == 0:
+                    return 0, 0, 0.0
+                    
+                labeling_index = (positive_cells / total_cells) * 100.0
+                return total_cells, positive_cells, labeling_index
+                
+            except RuntimeError as e:
+                # If they passed the 3-channel G1 model, it will raise a RuntimeError.
+                # We fallback to StarDist.
+                print(f"[Ki67Evaluator] Falling back to StarDist: {e}")
+                pass
 
+        # ── 3. StarDist Fallback ──────────────────────────────────────
+        star_model = self._load_star_model()
+        labels, _ = star_model.predict_instances(img_np)
+        
         unique_ids = np.unique(labels)
-        unique_ids = unique_ids[unique_ids != 0]  # drop background
+        unique_ids = unique_ids[unique_ids != 0]
         total_cells = len(unique_ids)
 
         if total_cells == 0:
             return 0, 0, 0.0
 
-        # ── 3. DAB channel ────────────────────────────────────────────
         dab_map = self._extract_dab_channel(img_np)
 
-        # ── 4. Per-nucleus scoring ────────────────────────────────────
         positive_cells = 0
         for cell_id in unique_ids:
             mask = labels == cell_id

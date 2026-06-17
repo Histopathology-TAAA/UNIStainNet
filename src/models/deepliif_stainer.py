@@ -120,6 +120,43 @@ class DeepLIIFStainer(nn.Module):
 
         return hema_rgb
 
+    @torch.no_grad()
+    def extract_segmentation(self, img_rgb):
+        """Extract the clinical segmentation mask from the 15-channel output.
+        
+        Args:
+            img_rgb: ``[B, 3, H, W]`` RGB images in ``[-1, 1]`` range.
+            
+        Returns:
+            seg_rgb: ``[B, 3, H, W]`` Segmentation mask in ``[-1, 1]`` range.
+        """
+        model = self._load_model(img_rgb.device)
+        
+        if self._output_nc < 15:
+            raise RuntimeError("Segmentation requires the full 15-channel DeepLIIF model (latest_net_G.pth), not the 3-channel version.")
+
+        _, _, H, W = img_rgb.shape
+        needs_resize = (H != 512 or W != 512)
+
+        if needs_resize:
+            x = F.interpolate(img_rgb, size=(512, 512),
+                              mode='bilinear', align_corners=False)
+        else:
+            x = img_rgb
+
+        # Forward pass
+        out = model(x)  # [B, output_nc, 512, 512]
+
+        # Extract channels 12:15 (Segmentation)
+        seg_rgb = out[:, 12:15, :, :]
+
+        if needs_resize:
+            # Nearest neighbor for segmentation masks
+            seg_rgb = F.interpolate(seg_rgb, size=(H, W),
+                                     mode='nearest')
+
+        return seg_rgb
+
     def forward(self, he_rgb):
         """Alias for extract_hematoxylin (nn.Module interface)."""
         return self.extract_hematoxylin(he_rgb)

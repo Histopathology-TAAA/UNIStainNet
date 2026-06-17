@@ -67,6 +67,7 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     
     # Initialize the evaluator
+    # Initialize the evaluator
     print("[INFO] Loading StarDist Model...")
     evaluator = Ki67ClinicalEvaluator(dab_threshold=0.15) # Thr doesn't matter here, we use it manually
     star_model = evaluator._load_star_model()

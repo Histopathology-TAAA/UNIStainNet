@@ -244,7 +244,7 @@ def main():
     # Ki67 Clinical Evaluator (lazy — StarDist loads on first call)
     ki67_evaluator = None
     if 'Ki67' in args.stains:
-        ki67_evaluator = Ki67ClinicalEvaluator(dab_threshold=args.dab_threshold)
+        ki67_evaluator = Ki67ClinicalEvaluator(dab_threshold=args.dab_threshold, deepliif_stainer=deepliif_stainer)
         print(f"[INFO] Ki67 clinical evaluator enabled (DAB threshold={args.dab_threshold})")
 
     # Per-stain evaluation
