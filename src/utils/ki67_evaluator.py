@@ -44,7 +44,7 @@ class Ki67ClinicalEvaluator:
     ], dtype=np.float64)
 
     def __init__(self, dab_threshold: float = 0.15,
-                 star_model_name: str = '2D_versatile_he',
+                 star_model_name: str = '2D_versatile_fluo',
                  deepliif_stainer=None):
         self.dab_threshold = dab_threshold
         self._star_model_name = star_model_name
@@ -91,6 +91,15 @@ class Ki67ClinicalEvaluator:
 
         dab = concentrations[:, 1].reshape(H, W)             # DAB column
         return np.clip(dab, 0.0, None)                       # non-negative
+
+    def _extract_hema_channel(self, rgb_01: np.ndarray) -> np.ndarray:
+        """Isolate the Hematoxylin optical-density channel."""
+        od = -np.log10(np.clip(rgb_01, 1e-6, 1.0))
+        H, W, _ = od.shape
+        od_flat = od.reshape(-1, 3)
+        concentrations = od_flat @ self._deconv_matrix
+        hema = concentrations[:, 0].reshape(H, W)
+        return np.clip(hema, 0.0, None)
 
     # ------------------------------------------------------------------
     # Core public API
@@ -172,9 +181,23 @@ class Ki67ClinicalEvaluator:
                 print(f"[Ki67Evaluator] Falling back to StarDist: {e}")
                 pass
 
-        # ── 3. StarDist Fallback ──────────────────────────────────────
+        # ── 3. StarDist Fallback (Grayscale Fluorescence Pipeline) ────
         star_model = self._load_star_model()
-        labels, _ = star_model.predict_instances(img_np)
+        
+        # Extract individual stain densities
+        dab_map = self._extract_dab_channel(img_np)
+        hema_map = self._extract_hema_channel(img_np)
+        
+        # Total structural density = Hematoxylin + DAB
+        # This converts a pale color image into a high-contrast grayscale image
+        # where ALL nuclei (blue and brown) are bright blobs on a dark background.
+        structural_density = hema_map + dab_map
+        
+        # Normalize for StarDist fluorescence model (expecting values roughly 0 to 1 with outliers)
+        from csbdeep.utils import normalize
+        img_norm = normalize(structural_density, 1, 99.8, axis=(0,1))
+        
+        labels, _ = star_model.predict_instances(img_norm)
         
         unique_ids = np.unique(labels)
         unique_ids = unique_ids[unique_ids != 0]
@@ -182,8 +205,6 @@ class Ki67ClinicalEvaluator:
 
         if total_cells == 0:
             return 0, 0, 0.0
-
-        dab_map = self._extract_dab_channel(img_np)
 
         positive_cells = 0
         for cell_id in unique_ids:

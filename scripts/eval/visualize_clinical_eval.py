@@ -69,7 +69,7 @@ def main():
     # Initialize the evaluator
     # Initialize the evaluator
     print("[INFO] Loading StarDist Model...")
-    evaluator = Ki67ClinicalEvaluator(dab_threshold=0.15) # Thr doesn't matter here, we use it manually
+    evaluator = Ki67ClinicalEvaluator(dab_threshold=0.15, star_model_name='2D_versatile_fluo')
     star_model = evaluator._load_star_model()
     
     image_paths = sorted([p for p in Path(args.input_dir).rglob('*') if p.suffix.lower() in ['.png', '.jpg', '.jpeg']])
@@ -87,11 +87,25 @@ def main():
         # Normalize to [0, 1] for StarDist and DAB
         img_01 = img_np.astype(np.float32) / 255.0
         
-        # 1. StarDist Prediction
-        labels, _ = star_model.predict_instances(img_01)
-        
-        # 2. Extract DAB
+        # 1. Extract DAB (and compute total structural density for StarDist)
         dab_map = evaluator._extract_dab_channel(img_01)
+        
+        # To get the Hematoxylin channel without rewriting the class, we can manually do it here:
+        od = -np.log10(np.clip(img_01, 1e-6, 1.0))
+        od_flat = od.reshape(-1, 3)
+        concentrations = od_flat @ evaluator._deconv_matrix
+        hema_map = np.clip(concentrations[:, 0].reshape(img_01.shape[0], img_01.shape[1]), 0.0, None)
+        
+        # Total structural density = Hematoxylin + DAB
+        # This makes all nuclei (both blue and brown) bright on a dark background!
+        structural_density = hema_map + dab_map
+        
+        # Normalize for the fluorescence model
+        from csbdeep.utils import normalize
+        img_norm = normalize(structural_density, 1, 99.8, axis=(0,1))
+        
+        # 2. StarDist Prediction (Fluorescence model)
+        labels, _ = star_model.predict_instances(img_norm)
         
         # 3. Generate overlays for each threshold
         for thr in args.thresholds:
