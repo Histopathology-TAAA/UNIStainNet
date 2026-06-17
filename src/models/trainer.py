@@ -1259,14 +1259,14 @@ class UNIStainNetTrainer(pl.LightningModule):
             val_ihc_hema = ihc_h
 
         # Case B edge input
-        val_edge_input = val_h_channel
+        val_edge_input = he_h
 
         # ---- Case B generation (metrics + visual) ----
         # Case B: real-world inference scenario
         with torch.no_grad():
             generated_b = self.generator_ema(he, uni, labels,
-                                            edge_input=val_edge_input, he_h=val_h_channel,
-                                            h_channel=val_h_channel)
+                                            edge_input=val_edge_input, he_h=he_h,
+                                            h_channel=he_h)
 
         # LPIPS (4x downsample: 128 for 512, 256 for 1024)
         lpips_size = self.hparams.image_size // 4
@@ -1326,7 +1326,7 @@ class UNIStainNetTrainer(pl.LightningModule):
                     bucket['he'].append(he[i].cpu())
                     bucket['real'].append(her2_01[i].cpu())
                     bucket['gen_b'].append(gen_b_01[i].cpu())
-                    bucket['h_he'].append(val_h_channel[i].cpu())
+                    bucket['h_he'].append(he_h[i].cpu())
                     bucket['h_ihc'].append(val_ihc_hema[i].cpu())
                     if gen_a_01 is not None:
                         bucket['gen_a'].append(gen_a_01[i].cpu())
@@ -1334,10 +1334,10 @@ class UNIStainNetTrainer(pl.LightningModule):
         # Log sample grids: first batch (fixed) + one random batch
         if batch_idx == 0:
             self._log_sample_grid(he, her2_01, gen_b_01, 'val/samples_fixed', gen_a_01=gen_a_01)
-            self._log_hema_compare_grid(he, val_h_channel, val_ihc_hema, her2_01, 'val/hema_compare_fixed')
+            self._log_hema_compare_grid(he, he_h, val_ihc_hema, her2_01, 'val/hema_compare_fixed')
         elif batch_idx == self._random_val_batch_idx:
             self._log_sample_grid(he, her2_01, gen_b_01, 'val/samples_random', gen_a_01=gen_a_01)
-            self._log_hema_compare_grid(he, val_h_channel, val_ihc_hema, her2_01, 'val/hema_compare_random')
+            self._log_hema_compare_grid(he, he_h, val_ihc_hema, her2_01, 'val/hema_compare_random')
 
     def on_validation_epoch_end(self):
         """Log per-label sample grids if multiple labels are present."""
