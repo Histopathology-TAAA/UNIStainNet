@@ -10,3 +10,13 @@ Pillow>=9.0
 numpy>=1.24
 tqdm
 wandb
+matplotlib
+scikit-image
+
+# New evaluation requirements
+torch-fidelity
+litlogger
+stardist
+csbdeep
+tensorflow
+opencv-python-headless
