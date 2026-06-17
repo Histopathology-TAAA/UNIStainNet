@@ -5,6 +5,7 @@ import numpy as np
 import cv2
 from PIL import Image
 import torch
+import random
 
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
@@ -26,6 +27,7 @@ def main():
     parser.add_argument('--resolution', type=str, default='40x', help="Magnification resolution (10x, 20x, 40x)")
     parser.add_argument('--save_modalities', action='store_true', help="Save all 4 intermediate modalities (H, mpH, mpDAB, Lap2)")
     parser.add_argument('--cpu', action='store_true', help="Force execution on CPU instead of GPU")
+    parser.add_argument('--seed', type=int, default=None, help="Use a specific random seed for reproducible image selection. If none is passed, a random seed is generated and printed.")
     
     args = parser.parse_args()
     
@@ -38,6 +40,13 @@ def main():
     deepliif_stainer = DeepLIIFStainer(weights_path=args.deepliif_weights)
     
     image_paths = sorted([p for p in Path(args.input_dir).rglob('*') if p.suffix.lower() in ['.png', '.jpg', '.jpeg']])
+    
+    # Random Seed Logic
+    seed = args.seed if args.seed is not None else random.randint(1, 999999)
+    print(f"[INFO] Using Random Seed: {seed}")
+    random.seed(seed)
+    random.shuffle(image_paths)
+    
     image_paths = image_paths[:args.max_images]
     
     print(f"[INFO] Found {len(image_paths)} images. Processing with DeepLIIF Segmentation...")
