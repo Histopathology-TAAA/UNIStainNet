@@ -808,12 +808,20 @@ class UNIStainNetTrainer(pl.LightningModule):
                     noise = torch.randn_like(ihc_h) * 0.15  # std=0.15 on [-1, 1] range
                     ihc_h = (ihc_h + noise).clamp(-1, 1)
         # ---- Hematoxylin conditioning ----
-        if self._deepliif_stainer is not None:
-            # DeepLIIF is enabled: completely override the dataloader's Grayscale images.
-            # We run both H&E and IHC through DeepLIIF to ensure identical distributions.
-            with torch.no_grad():
-                he_h = self._get_hema(he)    # [B, 1, H, W]
-                ihc_h = self._get_hema(her2) # [B, 1, H, W]
+        if self._deepliif_stainer is not None and use_case_a:
+            # Hybrid mode: H&E uses Analytical (he_h). IHC uses DeepLIIF + Normalization.
+            raw_ihc_hema = self._get_hema(her2)  # [B, 1, H, W]
+            
+            # Statistical Normalization (Histogram Matching proxy)
+            mean_he = he_h.mean(dim=[2, 3], keepdim=True)
+            std_he = he_h.std(dim=[2, 3], keepdim=True) + 1e-8
+            
+            mean_ihc = raw_ihc_hema.mean(dim=[2, 3], keepdim=True)
+            std_ihc = raw_ihc_hema.std(dim=[2, 3], keepdim=True) + 1e-8
+            
+            # Shift and scale DeepLIIF output to match Analytical H&E distribution
+            ihc_h = (raw_ihc_hema - mean_ihc) / std_ihc * std_he + mean_he
+            ihc_h = ihc_h.clamp(-1, 1)
 
         # Standard routing logic
         edge_input = ihc_h if use_case_a else he_h  # [B, 1, H, W]
@@ -1238,15 +1246,19 @@ class UNIStainNetTrainer(pl.LightningModule):
 
         # ---- Hematoxylin conditioning for validation ----
         if self._deepliif_stainer is not None:
-            # During evaluation, we use DeepLIIF for both
-            with torch.no_grad():
-                val_h_channel = self._get_hema(he)
-                val_ihc_hema = self._get_hema(her2)
+            raw_ihc_hema = self._get_hema(her2)
+            
+            mean_he = he_h.mean(dim=[2, 3], keepdim=True)
+            std_he = he_h.std(dim=[2, 3], keepdim=True) + 1e-8
+            mean_ihc = raw_ihc_hema.mean(dim=[2, 3], keepdim=True)
+            std_ihc = raw_ihc_hema.std(dim=[2, 3], keepdim=True) + 1e-8
+            
+            ihc_h_norm = (raw_ihc_hema - mean_ihc) / std_ihc * std_he + mean_he
+            val_ihc_hema = ihc_h_norm.clamp(-1, 1)
         else:
-            val_h_channel = he_h
             val_ihc_hema = ihc_h
 
-        # Case B uses the appropriate H-channel (DeepLIIF if available, else dataloader fallback)
+        # Case B edge input
         val_edge_input = val_h_channel
 
         # ---- Case B generation (metrics + visual) ----

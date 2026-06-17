@@ -111,14 +111,27 @@ def generate_for_stain(model, uni_model, dataloader, stain_label, guidance_scale
         
         # h_channel: determine based on Hybrid DeepLIIF mode or legacy mode
         if deepliif_stainer is not None:
-            # Full DeepLIIF Migration: override dataloader's Grayscale fallback
-            with torch.no_grad():
-                he_h = deepliif_stainer.extract_hematoxylin(he)
-                ihc_h = deepliif_stainer.extract_hematoxylin(her2)
-            
-            edge_input = ihc_h if aligned else he_h
-            h_channel = ihc_h if aligned else he_h
-            align_source = he_h
+            if not aligned:
+                # Case B: Standard inference uses Analytical H&E
+                edge_input = he_h
+                h_channel = he_h
+                align_source = he_h
+            else:
+                # Case A: Uses DeepLIIF on IHC + Normalization
+                raw_ihc_hema = deepliif_stainer.extract_hematoxylin(her2)
+                
+                # Statistical Normalization
+                mean_he = he_h.mean(dim=[2, 3], keepdim=True)
+                std_he = he_h.std(dim=[2, 3], keepdim=True) + 1e-8
+                mean_ihc = raw_ihc_hema.mean(dim=[2, 3], keepdim=True)
+                std_ihc = raw_ihc_hema.std(dim=[2, 3], keepdim=True) + 1e-8
+                
+                ihc_h_norm = (raw_ihc_hema - mean_ihc) / std_ihc * std_he + mean_he
+                ihc_h_norm = ihc_h_norm.clamp(-1, 1)
+                
+                edge_input = ihc_h_norm
+                h_channel = ihc_h_norm
+                align_source = he_h
         else:
             h_channel = edge_input
             align_source = he_h
