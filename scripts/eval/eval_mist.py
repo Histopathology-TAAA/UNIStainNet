@@ -195,6 +195,8 @@ def main():
                         help='DeepLIIF segmentation intensity threshold.')
     parser.add_argument('--marker_thresh', type=str, default='default',
                         help="DeepLIIF marker intensity threshold (int or 'default').")
+    parser.add_argument('--min_nuclei', type=int, default=100,
+                        help="Minimum number of real nuclei required to include a patch in the Ki67 clinical metrics. Default is 100.")
     args = parser.parse_args()
 
     if not args.random_seed:
@@ -362,10 +364,22 @@ def main():
             N = gen.shape[0]
             for i in tqdm(range(N), desc="  Ki67 scoring"):
                 real_cells, real_pos, real_li = ki67_evaluator.compute_labeling_index(real[i])
+                
+                # Artifact Mitigation: If the ground-truth patch has very few cells, 
+                # it's likely fat, background, or empty stroma. The LI is too unstable to evaluate.
+                if real_cells < args.min_nuclei:
+                    continue
+                    
                 fake_cells, fake_pos, fake_li = ki67_evaluator.compute_labeling_index(gen[i])
 
                 real_li_scores.append(real_li)
                 fake_li_scores.append(fake_li)
+
+            # Check if we dropped everything!
+            if len(real_li_scores) == 0:
+                print(f"  [WARNING] All patches were dropped because they had < {args.min_nuclei} nuclei!")
+                real_li_scores = [0.0]
+                fake_li_scores = [0.0]
 
             # Compute global summary
             ki67_summary = compute_ki67_summary(real_li_scores, fake_li_scores)
