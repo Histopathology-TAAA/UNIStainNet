@@ -110,6 +110,13 @@ def main():
     parser.add_argument('--output_dir', type=str, default=None)
     parser.add_argument('--guidance_scale', type=float, default=1.0)
     parser.add_argument('--batch_size', type=int, default=4)
+    parser.add_argument('--random_seed', action='store_true', help='Use a random seed instead of fixed seed 42')
+    parser.add_argument('--ki67_eval_method', type=str, choices=['deepliif', 'stardist'], default='deepliif',
+                        help='Method to evaluate Ki67 Labeling Index.')
+    parser.add_argument('--seg_thresh', type=int, default=130,
+                        help='DeepLIIF segmentation intensity threshold.')
+    parser.add_argument('--marker_thresh', type=str, default='default',
+                        help="DeepLIIF marker intensity threshold (int or 'default').")
     parser.add_argument('--skip_uni_fid', action='store_true')
     parser.add_argument('--composite_bg', action='store_true')
     args = parser.parse_args()

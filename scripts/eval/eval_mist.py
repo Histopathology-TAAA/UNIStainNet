@@ -189,6 +189,12 @@ def main():
                         help='DAB optical-density threshold for Ki67 positive cell calling. '
                              'Lower = more sensitive.  Adjust per-dataset for white-balance '
                              'and contrast differences.  Default: 0.15')
+    parser.add_argument('--ki67_eval_method', type=str, choices=['deepliif', 'stardist'], default='deepliif',
+                        help='Method to evaluate Ki67 Labeling Index.')
+    parser.add_argument('--seg_thresh', type=int, default=130,
+                        help='DeepLIIF segmentation intensity threshold.')
+    parser.add_argument('--marker_thresh', type=str, default='default',
+                        help="DeepLIIF marker intensity threshold (int or 'default').")
     args = parser.parse_args()
 
     if not args.random_seed:
@@ -241,11 +247,23 @@ def main():
 
     dab_extractor = DABExtractor(device='cpu')
 
+    # Initialize DeepLIIFStainer early so it can be passed to the evaluator
+    deepliif_stainer = None
+    if getattr(model.hparams, 'deepliif_weights_path', None) or args.aligned:
+        deepliif_weights_path = getattr(model.hparams, 'deepliif_weights_path', 'deepliif-weights/DeepLIIF_Latest_Model')
+        deepliif_stainer = DeepLIIFStainer(weights_path=deepliif_weights_path)
+        
     # Ki67 Clinical Evaluator (lazy — StarDist loads on first call)
     ki67_evaluator = None
     if 'Ki67' in args.stains:
-        ki67_evaluator = Ki67ClinicalEvaluator(dab_threshold=args.dab_threshold, deepliif_stainer=deepliif_stainer)
-        print(f"[INFO] Ki67 clinical evaluator enabled (DAB threshold={args.dab_threshold})")
+        ki67_evaluator = Ki67ClinicalEvaluator(
+            dab_threshold=args.dab_threshold, 
+            deepliif_stainer=deepliif_stainer,
+            eval_method=args.ki67_eval_method,
+            seg_thresh=args.seg_thresh,
+            marker_thresh=args.marker_thresh
+        )
+        print(f"[INFO] Ki67 clinical evaluator enabled (Method={args.ki67_eval_method}, DAB thresh={args.dab_threshold})")
 
     # Per-stain evaluation
     for stain in args.stains:
@@ -271,10 +289,9 @@ def main():
 
         # Initialize DeepLIIF if checkpoint used it
         hema_channels = getattr(model.hparams, 'hema_channels', 1)
-        deepliif_weights_path = getattr(model.hparams, 'deepliif_weights_path', '')
-        deepliif_stainer = None
-        if deepliif_weights_path:
-            deepliif_stainer = DeepLIIFStainer(weights_path=deepliif_weights_path)
+        # DeepLIIF logic is now handled above globally for this script
+        if args.aligned and hasattr(model.generator, 'use_alignment') and model.generator.use_alignment:
+            pass # deepliif_stainer is already initialized above if needed
             print(f"[INFO] DeepLIIF is enabled. Using {hema_channels}-channel setup.")
 
         # Generate

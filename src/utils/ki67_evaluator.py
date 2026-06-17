@@ -45,11 +45,17 @@ class Ki67ClinicalEvaluator:
 
     def __init__(self, dab_threshold: float = 0.15,
                  star_model_name: str = '2D_versatile_fluo',
-                 deepliif_stainer=None):
+                 deepliif_stainer=None,
+                 eval_method: str = 'deepliif',
+                 seg_thresh: int = 130,
+                 marker_thresh: str = 'default'):
         self.dab_threshold = dab_threshold
         self._star_model_name = star_model_name
         self._star_model = None
         self._deepliif_stainer = deepliif_stainer
+        self.eval_method = eval_method
+        self.seg_thresh = seg_thresh
+        self.marker_thresh = None if marker_thresh == 'None' else (marker_thresh if marker_thresh == 'default' else int(marker_thresh))
 
         # Pre-compute the pseudo-inverse of the stain matrix once
         # stain_matrix is (2, 3); we need (3, 2) pinv for deconvolution
@@ -137,42 +143,44 @@ class Ki67ClinicalEvaluator:
         img_np = np.clip(img_np, 0.0, 1.0).astype(np.float32)
 
         # ── 2. DeepLIIF Segmentation vs StarDist ──────────────────────
-        if self._deepliif_stainer is not None:
+        if self.eval_method == 'deepliif' and self._deepliif_stainer is not None:
             # Try to use DeepLIIF Segmentation
             try:
                 import torch
+                from deepliif.postprocessing import compute_final_results
+                
                 # DeepLIIF expects [1, 3, H, W] in [-1, 1]
                 img_tensor = torch.from_numpy(img_np).permute(2, 0, 1).unsqueeze(0) * 2.0 - 1.0
                 
-                # Extract segmentation
-                seg_mask = self._deepliif_stainer.extract_segmentation(img_tensor)
+                # Extract all modalities
+                modalities = self._deepliif_stainer.extract_all_modalities(img_tensor)
+                seg_mask = modalities['Segmentation']
+                marker_mask = modalities['mpIHC_Ki67']
                 
                 # Convert back to numpy [0, 255]
                 seg_np = ((seg_mask.squeeze(0).permute(1, 2, 0).cpu().numpy() + 1.0) / 2.0 * 255).astype(np.uint8)
+                marker_np = ((marker_mask.squeeze(0).permute(1, 2, 0).cpu().numpy() + 1.0) / 2.0 * 255).astype(np.uint8)
+                img_np_255 = (img_np * 255).astype(np.uint8)
                 
-                # In DeepLIIF Seg masks:
-                # Positive cells are distinctly Red/Brown/Cyan depending on the training setup.
-                # Usually: Blue channel > 150 = Negative (Hematoxylin)
-                # Red channel > 150 = Positive (Ki67/DAB)
+                # Use DeepLIIF's official post-processing
+                _, _, scoring = compute_final_results(
+                    orig=img_np_255,
+                    seg=seg_np,
+                    marker=marker_np,
+                    resolution='40x', # MIST dataset is 40x
+                    size_thresh='default',
+                    size_thresh_upper=None,
+                    seg_thresh=self.seg_thresh,
+                    marker_thresh=self.marker_thresh
+                )
                 
-                red_channel = seg_np[:, :, 0]
-                blue_channel = seg_np[:, :, 2]
-                
-                pos_mask = (red_channel > 150) & (blue_channel < 100)
-                neg_mask = (blue_channel > 150) & (red_channel < 100)
-                
-                import cv2
-                _, pos_labels = cv2.connectedComponents(pos_mask.astype(np.uint8))
-                _, neg_labels = cv2.connectedComponents(neg_mask.astype(np.uint8))
-                
-                positive_cells = len(np.unique(pos_labels)) - 1 # Subtract background
-                negative_cells = len(np.unique(neg_labels)) - 1
-                total_cells = positive_cells + negative_cells
+                total_cells = scoring['num_total']
+                positive_cells = scoring['num_pos']
                 
                 if total_cells == 0:
                     return 0, 0, 0.0
                     
-                labeling_index = (positive_cells / total_cells) * 100.0
+                labeling_index = scoring['percent_pos']
                 return total_cells, positive_cells, labeling_index
                 
             except RuntimeError as e:
