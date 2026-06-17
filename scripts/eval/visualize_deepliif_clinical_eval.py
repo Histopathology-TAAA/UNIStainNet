@@ -14,7 +14,7 @@ def main():
     parser = argparse.ArgumentParser(description="Visualize DeepLIIF Clinical Evaluation")
     parser.add_argument('--input_dir', type=str, required=True, help="Directory containing IHC images")
     parser.add_argument('--output_dir', type=str, required=True, help="Directory to save visual overlays")
-    parser.add_argument('--deepliif_weights', type=str, required=True, help="Path to DeepLIIF latest_net_G.pth (15-channel)")
+    parser.add_argument('--deepliif_weights', type=str, required=True, help="Path to DeepLIIF_Latest_Model directory containing G1 to G55 models")
     parser.add_argument('--max_images', type=int, default=10, help="Max images to process")
     args = parser.parse_args()
     
@@ -45,7 +45,7 @@ def main():
             seg_mask = deepliif_stainer.extract_segmentation(img_tensor)
         except RuntimeError as e:
             print(f"[ERROR] Failed to extract segmentation: {e}")
-            print("Make sure you are using the full 15-channel latest_net_G.pth, NOT latest_net_G1.pth!")
+            print("Make sure your --deepliif_weights points to the full DeepLIIF_Latest_Model directory containing G1 through G55 models!")
             return
             
         seg_np = ((seg_mask.squeeze(0).permute(1, 2, 0).cpu().numpy() + 1.0) / 2.0 * 255).astype(np.uint8)
