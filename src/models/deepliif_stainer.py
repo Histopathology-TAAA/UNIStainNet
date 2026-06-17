@@ -132,9 +132,6 @@ class DeepLIIFStainer(nn.Module):
         """
         model = self._load_model(img_rgb.device)
         
-        if self._output_nc < 15:
-            raise RuntimeError("Segmentation requires the full 15-channel DeepLIIF model (latest_net_G.pth), not the 3-channel version.")
-
         _, _, H, W = img_rgb.shape
         needs_resize = (H != 512 or W != 512)
 
@@ -146,9 +143,13 @@ class DeepLIIFStainer(nn.Module):
 
         # Forward pass
         out = model(x)  # [B, output_nc, 512, 512]
-
-        # Extract channels 12:15 (Segmentation)
-        seg_rgb = out[:, 12:15, :, :]
+        
+        if self._output_nc == 15:
+            # 15-channel combined model
+            seg_rgb = out[:, 12:15, :, :]
+        else:
+            # 3-channel separated model (e.g. latest_net_G4.pth)
+            seg_rgb = out[:, 0:3, :, :]
 
         if needs_resize:
             # Nearest neighbor for segmentation masks
