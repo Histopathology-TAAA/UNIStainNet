@@ -25,8 +25,12 @@ def main():
     parser.add_argument('--marker_thresh', type=str, default='default', help="Marker intensity threshold for positivity (int or 'default')")
     parser.add_argument('--resolution', type=str, default='40x', help="Magnification resolution (10x, 20x, 40x)")
     parser.add_argument('--save_modalities', action='store_true', help="Save all 4 intermediate modalities (H, mpH, mpDAB, Lap2)")
+    parser.add_argument('--cpu', action='store_true', help="Force execution on CPU instead of GPU")
     
     args = parser.parse_args()
+    
+    device = torch.device('cpu' if args.cpu or not torch.cuda.is_available() else 'cuda')
+    print(f"[INFO] Using device: {device}")
     
     os.makedirs(args.output_dir, exist_ok=True)
     
@@ -49,7 +53,7 @@ def main():
         img_01 = img_np.astype(np.float32) / 255.0
         
         # DeepLIIF expects [1, 3, H, W] in [-1, 1]
-        img_tensor = torch.from_numpy(img_01).permute(2, 0, 1).unsqueeze(0) * 2.0 - 1.0
+        img_tensor = torch.from_numpy(img_01).permute(2, 0, 1).unsqueeze(0).to(device) * 2.0 - 1.0
         
         try:
             modalities = deepliif_stainer.extract_all_modalities(img_tensor)
@@ -102,6 +106,10 @@ def main():
         # Save the RAW segmentation mask to see what DeepLIIF generated!
         raw_seg_path = Path(args.output_dir) / f"{img_path.stem}_RAW_SEG.jpg"
         Image.fromarray(seg_np).save(raw_seg_path)
+        
+        # Save the original image for easy comparison!
+        orig_path = Path(args.output_dir) / f"{img_path.stem}_ORIGINAL.jpg"
+        Image.fromarray(img_np).save(orig_path)
         
         # Save intermediate modalities if requested
         if args.save_modalities:
