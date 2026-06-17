@@ -17,6 +17,15 @@ def main():
     parser.add_argument('--output_dir', type=str, required=True, help="Directory to save visual overlays")
     parser.add_argument('--deepliif_weights', type=str, required=True, help="Path to DeepLIIF_Latest_Model directory containing G1 to G55 models")
     parser.add_argument('--max_images', type=int, default=10, help="Max images to process")
+    
+    # DeepLIIF Control Parameters (Matching Web UI Sliders)
+    parser.add_argument('--size_thresh', type=str, default='default', help="Minimum size gating for nuclei (int or 'default')")
+    parser.add_argument('--size_thresh_upper', type=str, default='None', help="Maximum size gating for nuclei (int or 'None')")
+    parser.add_argument('--seg_thresh', type=int, default=130, help="Segmentation intensity threshold (0-255)")
+    parser.add_argument('--marker_thresh', type=str, default='default', help="Marker intensity threshold for positivity (int or 'default')")
+    parser.add_argument('--resolution', type=str, default='40x', help="Magnification resolution (10x, 20x, 40x)")
+    parser.add_argument('--save_modalities', action='store_true', help="Save all 4 intermediate modalities (H, mpH, mpDAB, Lap2)")
+    
     args = parser.parse_args()
     
     os.makedirs(args.output_dir, exist_ok=True)
@@ -43,22 +52,33 @@ def main():
         img_tensor = torch.from_numpy(img_01).permute(2, 0, 1).unsqueeze(0) * 2.0 - 1.0
         
         try:
-            seg_mask = deepliif_stainer.extract_segmentation(img_tensor)
+            modalities = deepliif_stainer.extract_all_modalities(img_tensor)
         except RuntimeError as e:
-            print(f"[ERROR] Failed to extract segmentation: {e}")
+            print(f"[ERROR] Failed to extract modalities: {e}")
             print("Make sure your --deepliif_weights points to the full DeepLIIF_Latest_Model directory containing G1 through G55 models!")
             return
             
+        seg_mask = modalities['Segmentation']
+        marker_mask = modalities['mpIHC_Ki67'] # G4 is Ki67 marker
+            
         seg_np = ((seg_mask.squeeze(0).permute(1, 2, 0).cpu().numpy() + 1.0) / 2.0 * 255).astype(np.uint8)
+        marker_np = ((marker_mask.squeeze(0).permute(1, 2, 0).cpu().numpy() + 1.0) / 2.0 * 255).astype(np.uint8)
+        
+        # Parse arguments (allowing for 'default' and 'None' strings)
+        size_thresh = None if args.size_thresh == 'None' else (args.size_thresh if args.size_thresh == 'default' else int(args.size_thresh))
+        size_thresh_upper = None if args.size_thresh_upper == 'None' else int(args.size_thresh_upper)
+        marker_thresh = None if args.marker_thresh == 'None' else (args.marker_thresh if args.marker_thresh == 'default' else int(args.marker_thresh))
         
         # Use DeepLIIF's official post-processing to get smooth contours and accurate splits
         overlay, refined, scoring = compute_final_results(
             orig=img_np,
             seg=seg_np,
-            marker=None,  # We don't need the Ki67 modality mask for basic positive/negative
-            resolution='40x', # Assume 40x for MIST dataset
-            size_thresh='default',
-            marker_thresh=None
+            marker=marker_np,
+            resolution=args.resolution,
+            size_thresh=size_thresh,
+            size_thresh_upper=size_thresh_upper,
+            seg_thresh=args.seg_thresh,
+            marker_thresh=marker_thresh
         )
         
         li = scoring['percent_pos']
@@ -82,6 +102,14 @@ def main():
         # Save the RAW segmentation mask to see what DeepLIIF generated!
         raw_seg_path = Path(args.output_dir) / f"{img_path.stem}_RAW_SEG.jpg"
         Image.fromarray(seg_np).save(raw_seg_path)
+        
+        # Save intermediate modalities if requested
+        if args.save_modalities:
+            for mod_name in ['Hematoxylin', 'mpIHC_DAPI', 'mpIHC_Lap2', 'mpIHC_Ki67']:
+                mod_tensor = modalities[mod_name]
+                mod_np = ((mod_tensor.squeeze(0).permute(1, 2, 0).cpu().numpy() + 1.0) / 2.0 * 255).astype(np.uint8)
+                mod_path = Path(args.output_dir) / f"{img_path.stem}_{mod_name}.jpg"
+                Image.fromarray(mod_np).save(mod_path)
             
     print(f"\n[SUCCESS] DeepLIIF Visualizations saved to {args.output_dir}")
     print("Please inspect the images. RED contours = Positive, BLUE contours = Negative.")
