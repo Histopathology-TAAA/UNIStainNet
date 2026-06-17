@@ -41,7 +41,7 @@ import numpy as np
 # from deepliif.data import transform
 # from deepliif.postprocessing import compute_final_results, compute_cell_results, to_array
 # from deepliif.postprocessing import encode_cell_data_v4, decode_cell_data_v4
-# from deepliif.options import Options, print_options
+from deepliif.options import Options, print_options
 
 from .base_model import BaseModel
 
