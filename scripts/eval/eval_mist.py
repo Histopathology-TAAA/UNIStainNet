@@ -207,7 +207,7 @@ def main():
 
     # Initialize DeepLIIFStainer early so it can be passed to the evaluator
     deepliif_stainer = None
-    if getattr(model.hparams, 'deepliif_weights_path', None):
+    if args.ki67_eval_method == 'deepliif' or getattr(model.hparams, 'deepliif_weights_path', None):
         deepliif_weights_path = getattr(model.hparams, 'deepliif_weights_path', 'deepliif-weights/DeepLIIF_Latest_Model')
         from src.models.deepliif_stainer import DeepLIIFStainer
         deepliif_stainer = DeepLIIFStainer(weights_path=deepliif_weights_path)
@@ -323,7 +323,7 @@ def main():
 
             # Compute global summary
             ki67_summary = compute_ki67_summary(real_li_scores, fake_li_scores)
-            print_ki67_summary(ki67_summary)
+            print_ki67_summary(ki67_summary, method=args.ki67_eval_method)
             stain_results['ki67_clinical'] = ki67_summary
 
         results['per_stain'][stain] = stain_results
