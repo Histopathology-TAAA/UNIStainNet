@@ -151,6 +151,8 @@ class Ki67ClinicalEvaluator:
                 
                 # DeepLIIF expects [1, 3, H, W] in [-1, 1]
                 img_tensor = torch.from_numpy(img_np).permute(2, 0, 1).unsqueeze(0) * 2.0 - 1.0
+                if torch.cuda.is_available():
+                    img_tensor = img_tensor.cuda()
                 
                 # Extract all modalities
                 modalities = self._deepliif_stainer.extract_all_modalities(img_tensor)
