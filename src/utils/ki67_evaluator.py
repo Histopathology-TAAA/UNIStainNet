@@ -323,12 +323,14 @@ def compute_ki67_summary(real_li_scores, fake_li_scores):
     return results
 
 
-def print_ki67_summary(summary: dict):
+def print_ki67_summary(summary: dict, method: str = 'stardist'):
     """Pretty-print Ki67 clinical metrics to the terminal."""
     tier_labels = {0: 'Low (<10%)', 1: 'Intermediate (10-20%)', 2: 'High (>20%)'}
+    
+    title = "DeepLIIF Gold Standard" if method == 'deepliif' else "StarDist Silver Standard"
 
     print("\n" + "=" * 60)
-    print("  Ki67 CLINICAL EVALUATION  (StarDist Silver Standard)")
+    print(f"  Ki67 CLINICAL EVALUATION  ({title})")
     print("=" * 60)
     print(f"  Images evaluated      : {summary['ki67_n_images']}")
     print(f"  Real  LI (mean ± std) : {summary['ki67_real_li_mean']:.2f}% ± {summary['ki67_real_li_std']:.2f}%")
