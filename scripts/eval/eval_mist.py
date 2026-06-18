@@ -251,8 +251,9 @@ def main():
 
     # Initialize DeepLIIFStainer early so it can be passed to the evaluator
     deepliif_stainer = None
-    if getattr(model.hparams, 'deepliif_weights_path', None) or args.aligned:
+    if args.ki67_eval_method == 'deepliif' or getattr(model.hparams, 'deepliif_weights_path', None):
         deepliif_weights_path = getattr(model.hparams, 'deepliif_weights_path', 'deepliif-weights/DeepLIIF_Latest_Model')
+        from src.models.deepliif_stainer import DeepLIIFStainer
         deepliif_stainer = DeepLIIFStainer(weights_path=deepliif_weights_path)
         
     # Ki67 Clinical Evaluator (lazy — StarDist loads on first call)
