@@ -159,6 +159,14 @@ def main():
                         help='DAB optical-density threshold for Ki67 positive cell calling. '
                              'Lower = more sensitive.  Adjust per-dataset for white-balance '
                              'and contrast differences.  Default: 0.15')
+    parser.add_argument('--ki67_eval_method', type=str, choices=['deepliif', 'stardist'], default='deepliif',
+                        help='Method to evaluate Ki67 Labeling Index.')
+    parser.add_argument('--seg_thresh', type=int, default=130,
+                        help='DeepLIIF segmentation intensity threshold.')
+    parser.add_argument('--marker_thresh', type=str, default='default',
+                        help="DeepLIIF marker intensity threshold (int or 'default').")
+    parser.add_argument('--min_nuclei', type=int, default=100,
+                        help="Minimum number of real nuclei required to include a patch in the Ki67 clinical metrics. Default is 100.")
     args = parser.parse_args()
 
     if not args.random_seed:
@@ -197,11 +205,24 @@ def main():
 
     dab_extractor = DABExtractor(device='cpu')
 
+    # Initialize DeepLIIFStainer early so it can be passed to the evaluator
+    deepliif_stainer = None
+    if getattr(model.hparams, 'deepliif_weights_path', None):
+        deepliif_weights_path = getattr(model.hparams, 'deepliif_weights_path', 'deepliif-weights/DeepLIIF_Latest_Model')
+        from src.models.deepliif_stainer import DeepLIIFStainer
+        deepliif_stainer = DeepLIIFStainer(weights_path=deepliif_weights_path)
+
     # Ki67 Clinical Evaluator (lazy — StarDist loads on first call)
     ki67_evaluator = None
     if 'Ki67' in args.stains:
-        ki67_evaluator = Ki67ClinicalEvaluator(dab_threshold=args.dab_threshold)
-        print(f"[INFO] Ki67 clinical evaluator enabled (DAB threshold={args.dab_threshold})")
+        ki67_evaluator = Ki67ClinicalEvaluator(
+            dab_threshold=args.dab_threshold,
+            deepliif_stainer=deepliif_stainer,
+            eval_method=args.ki67_eval_method,
+            seg_thresh=args.seg_thresh,
+            marker_thresh=args.marker_thresh
+        )
+        print(f"[INFO] Ki67 clinical evaluator enabled (Method={args.ki67_eval_method}, DAB thresh={args.dab_threshold})")
 
     # Per-stain evaluation
     for stain in args.stains:
@@ -285,10 +306,20 @@ def main():
             N = gen.shape[0]
             for i in tqdm(range(N), desc="  Ki67 scoring"):
                 real_cells, real_pos, real_li = ki67_evaluator.compute_labeling_index(real[i])
+                
+                # Artifact Mitigation: Drop patches with too few cells
+                if real_cells < args.min_nuclei:
+                    continue
+                    
                 fake_cells, fake_pos, fake_li = ki67_evaluator.compute_labeling_index(gen[i])
 
                 real_li_scores.append(real_li)
                 fake_li_scores.append(fake_li)
+                
+            if len(real_li_scores) == 0:
+                print(f"  [WARNING] All patches were dropped because they had < {args.min_nuclei} nuclei!")
+                real_li_scores = [0.0]
+                fake_li_scores = [0.0]
 
             # Compute global summary
             ki67_summary = compute_ki67_summary(real_li_scores, fake_li_scores)

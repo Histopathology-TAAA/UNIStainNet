@@ -44,10 +44,18 @@ class Ki67ClinicalEvaluator:
     ], dtype=np.float64)
 
     def __init__(self, dab_threshold: float = 0.15,
-                 star_model_name: str = '2D_versatile_he'):
+                 star_model_name: str = '2D_versatile_fluo',
+                 deepliif_stainer=None,
+                 eval_method: str = 'deepliif',
+                 seg_thresh: int = 130,
+                 marker_thresh: str = 'default'):
         self.dab_threshold = dab_threshold
         self._star_model_name = star_model_name
         self._star_model = None
+        self._deepliif_stainer = deepliif_stainer
+        self.eval_method = eval_method
+        self.seg_thresh = seg_thresh
+        self.marker_thresh = None if marker_thresh == 'None' else (marker_thresh if marker_thresh == 'default' else int(marker_thresh))
 
         # Pre-compute the pseudo-inverse of the stain matrix once
         # stain_matrix is (2, 3); we need (3, 2) pinv for deconvolution
@@ -90,6 +98,15 @@ class Ki67ClinicalEvaluator:
         dab = concentrations[:, 1].reshape(H, W)             # DAB column
         return np.clip(dab, 0.0, None)                       # non-negative
 
+    def _extract_hema_channel(self, rgb_01: np.ndarray) -> np.ndarray:
+        """Isolate the Hematoxylin optical-density channel."""
+        od = -np.log10(np.clip(rgb_01, 1e-6, 1.0))
+        H, W, _ = od.shape
+        od_flat = od.reshape(-1, 3)
+        concentrations = od_flat @ self._deconv_matrix
+        hema = concentrations[:, 0].reshape(H, W)            # Hematoxylin column
+        return np.clip(hema, 0.0, None)
+
     # ------------------------------------------------------------------
     # Core public API
     # ------------------------------------------------------------------
@@ -125,12 +142,60 @@ class Ki67ClinicalEvaluator:
 
         img_np = np.clip(img_np, 0.0, 1.0).astype(np.float32)
 
-        # ── 2. StarDist nuclear segmentation ──────────────────────────
+        # ── 2. DeepLIIF vs StarDist Evaluation Method ─────────────────
+        if self.eval_method == 'deepliif' and self._deepliif_stainer is not None:
+            try:
+                import torch
+                from deepliif.postprocessing import compute_final_results
+                
+                # DeepLIIF expects [1, 3, H, W] in [-1, 1]
+                img_tensor = torch.from_numpy(img_np).permute(2, 0, 1).unsqueeze(0) * 2.0 - 1.0
+                
+                modalities = self._deepliif_stainer.extract_all_modalities(img_tensor)
+                seg_mask = modalities['Segmentation']
+                marker_mask = modalities['mpIHC_Ki67']
+                
+                seg_np = ((seg_mask.squeeze(0).permute(1, 2, 0).cpu().numpy() + 1.0) / 2.0 * 255).astype(np.uint8)
+                marker_np = ((marker_mask.squeeze(0).permute(1, 2, 0).cpu().numpy() + 1.0) / 2.0 * 255).astype(np.uint8)
+                img_np_255 = (img_np * 255).astype(np.uint8)
+                
+                _, _, scoring = compute_final_results(
+                    orig=img_np_255,
+                    seg=seg_np,
+                    marker=marker_np,
+                    resolution='40x',
+                    size_thresh='default',
+                    size_thresh_upper=None,
+                    seg_thresh=self.seg_thresh,
+                    marker_thresh=self.marker_thresh
+                )
+                
+                total_cells = scoring['num_total']
+                positive_cells = scoring['num_pos']
+                
+                if total_cells == 0:
+                    return 0, 0, 0.0
+                    
+                labeling_index = scoring['percent_pos']
+                return total_cells, positive_cells, labeling_index
+                
+            except RuntimeError as e:
+                print(f"[Ki67Evaluator] Falling back to StarDist: {e}")
+                pass
+
+        # ── 3. StarDist Fallback (Grayscale Fluorescence Pipeline) ────
         star_model = self._load_star_model()
-        # StarDist expects uint8 [0, 255] or float [0, 1] depending on
-        # the model.  The versatile_he model ships with its own normalizer.
-        labels, _ = star_model.predict_instances(img_np)
-        # `labels` is (H, W) int32, where 0 = background, 1..N = cells
+        
+        # We mathematically sum Hematoxylin + DAB to create a "Structural Density" map
+        dab_map = self._extract_dab_channel(img_np)
+        hema_map = self._extract_hema_channel(img_np)
+        structural_density = dab_map + hema_map
+        
+        # Normalize for fluorescence network
+        from csbdeep.utils import normalize
+        structural_density = normalize(structural_density, 1, 99.8, axis=(0,1))
+        
+        labels, _ = star_model.predict_instances(structural_density)
 
         unique_ids = np.unique(labels)
         unique_ids = unique_ids[unique_ids != 0]  # drop background
@@ -138,9 +203,6 @@ class Ki67ClinicalEvaluator:
 
         if total_cells == 0:
             return 0, 0, 0.0
-
-        # ── 3. DAB channel ────────────────────────────────────────────
-        dab_map = self._extract_dab_channel(img_np)
 
         # ── 4. Per-nucleus scoring ────────────────────────────────────
         positive_cells = 0

@@ -20,3 +20,5 @@ stardist
 csbdeep
 tensorflow
 opencv-python-headless
+numba
+requests
