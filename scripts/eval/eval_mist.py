@@ -278,14 +278,14 @@ def main():
 
         # HE-H SSIM and HE-NMI metrics
         print(f"  Computing HE-H SSIM and HE-NMI...")
-        he_h_ssim = compute_he_h_ssim(gen, real, dab_extractor=dab_extractor)
-        he_nmi = compute_he_nmi(gen, real, dab_extractor=dab_extractor)
+        he_h_ssim = compute_he_h_ssim(gen, he, is_target_he=True, dab_extractor=dab_extractor)
+        he_nmi = compute_he_nmi(gen, he, is_target_he=True, dab_extractor=dab_extractor)
         he_struct_ssim = compute_he_structure_metrics(gen, he)
         stain_results['he_structure'] = {
-            'he_h_ssim_mean': he_h_ssim['he_h_ssim_mean'],
-            'he_h_ssim_std': he_h_ssim['he_h_ssim_std'],
-            'he_nmi_mean': he_nmi['he_nmi_mean'],
-            'he_nmi_std': he_nmi['he_nmi_std'],
+            'he_h_ssim_mean': he_h_ssim['ssim_mean'],
+            'he_h_ssim_std': he_h_ssim['ssim_std'],
+            'he_nmi_mean': he_nmi['nmi_mean'],
+            'he_nmi_std': he_nmi['nmi_std'],
             'he_structure_ssim': he_struct_ssim['he_structure_ssim'],
         }
 
