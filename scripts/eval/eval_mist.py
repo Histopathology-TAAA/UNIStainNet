@@ -385,7 +385,7 @@ def main():
 
             # Compute global summary
             ki67_summary = compute_ki67_summary(real_li_scores, fake_li_scores)
-            print_ki67_summary(ki67_summary)
+            print_ki67_summary(ki67_summary, method=args.ki67_eval_method)
             stain_results['ki67_clinical'] = ki67_summary
 
         results['per_stain'][stain] = stain_results
