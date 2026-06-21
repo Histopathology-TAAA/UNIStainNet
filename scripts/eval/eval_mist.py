@@ -252,7 +252,8 @@ def main():
     # Initialize DeepLIIFStainer early so it can be passed to the evaluator
     deepliif_stainer = None
     if args.ki67_eval_method == 'deepliif' or getattr(model.hparams, 'deepliif_weights_path', None):
-        deepliif_weights_path = getattr(model.hparams, 'deepliif_weights_path', 'deepliif-weights/DeepLIIF_Latest_Model')
+        # For evaluation, we MUST use the full DeepLIIF ensemble directory, not just G1.
+        deepliif_weights_path = 'deepliif-weights/DeepLIIF_Latest_Model'
         from src.models.deepliif_stainer import DeepLIIFStainer
         deepliif_stainer = DeepLIIFStainer(weights_path=deepliif_weights_path)
         
