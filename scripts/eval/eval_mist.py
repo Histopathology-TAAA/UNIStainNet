@@ -359,7 +359,8 @@ def main():
 
         # Ki67 Clinical Evaluation (cell-level metrics)
         if stain == 'Ki67' and ki67_evaluator is not None:
-            print(f"  Computing Ki67 clinical metrics (StarDist)...")
+            method_label = "DeepLIIF" if args.ki67_eval_method == 'deepliif' else "StarDist"
+            print(f"  Computing Ki67 clinical metrics ({method_label})...")
             real_li_scores = []
             fake_li_scores = []
 

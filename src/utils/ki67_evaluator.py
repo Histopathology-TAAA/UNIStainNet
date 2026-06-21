@@ -185,11 +185,11 @@ class Ki67ClinicalEvaluator:
                 labeling_index = scoring['percent_pos']
                 return total_cells, positive_cells, labeling_index
                 
-            except RuntimeError as e:
-                # If they passed the 3-channel G1 model, it will raise a RuntimeError.
-                # We fallback to StarDist.
-                print(f"[Ki67Evaluator] Falling back to StarDist: {e}")
-                pass
+            except Exception as e:
+                # DeepLIIF ensemble failed — permanently fall back to StarDist
+                print(f"\n[Ki67Evaluator] *** DeepLIIF FAILED — falling back to StarDist ***")
+                print(f"[Ki67Evaluator] Error: {type(e).__name__}: {e}")
+                self.eval_method = 'stardist'  # Permanently disable for remaining images
 
         # ── 3. StarDist Fallback (Grayscale Fluorescence Pipeline) ────
         star_model = self._load_star_model()
