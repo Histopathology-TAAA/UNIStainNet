@@ -611,9 +611,17 @@ def compute_he_h_ssim(generated, he_reference, dab_extractor=None, he_extractor=
     h_gen = torch.cat(h_gen_list)
     h_he = torch.cat(h_he_list)
 
-    # Ensure [0, 1] range
-    h_gen = (h_gen - h_gen.min()) / (h_gen.max() - h_gen.min() + 1e-6)
-    h_he = (h_he - h_he.min()) / (h_he.max() - h_he.min() + 1e-6)
+    # Ensure [0, 1] range robustly per image
+    def robust_normalize(t):
+        N = t.shape[0]
+        t_flat = t.view(N, -1)
+        # Use 1st and 99th percentiles to avoid extreme optical density outliers
+        p1 = torch.quantile(t_flat, 0.01, dim=1).view(N, 1, 1)
+        p99 = torch.quantile(t_flat, 0.99, dim=1).view(N, 1, 1)
+        return torch.clamp((t - p1) / (p99 - p1 + 1e-6), 0, 1)
+
+    h_gen = robust_normalize(h_gen)
+    h_he = robust_normalize(h_he)
 
     # Stack to [N, 1, H, W] for SSIM
     h_gen_1ch = h_gen.unsqueeze(1)
@@ -677,9 +685,13 @@ def compute_he_nmi(generated, he_reference, dab_extractor=None, he_extractor=Non
         h_g = h_gen[i].flatten().numpy()
         h_r = h_he[i].flatten().numpy()
 
-        # Normalize to [0, 1] for consistent histogram binning
-        h_g_norm = (h_g - h_g.min()) / (h_g.max() - h_g.min() + 1e-6)
-        h_r_norm = (h_r - h_r.min()) / (h_r.max() - h_r.min() + 1e-6)
+        # Normalize to [0, 1] using robust 1st and 99th percentiles for consistent histogram binning
+        # without being ruined by extreme optical density outliers
+        p1_g, p99_g = np.percentile(h_g, [1, 99])
+        p1_r, p99_r = np.percentile(h_r, [1, 99])
+        
+        h_g_norm = np.clip((h_g - p1_g) / (p99_g - p1_g + 1e-6), 0, 1)
+        h_r_norm = np.clip((h_r - p1_r) / (p99_r - p1_r + 1e-6), 0, 1)
 
         # Joint histogram
         hist_2d, _, _ = np.histogram2d(h_g_norm, h_r_norm, bins=n_bins, range=[[0, 1], [0, 1]])
