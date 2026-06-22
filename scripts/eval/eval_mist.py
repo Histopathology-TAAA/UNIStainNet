@@ -167,6 +167,8 @@ def main():
                         help="DeepLIIF marker intensity threshold (int or 'default').")
     parser.add_argument('--min_nuclei', type=int, default=100,
                         help="Minimum number of real nuclei required to include a patch in the Ki67 clinical metrics. Default is 100.")
+    parser.add_argument('--deepliif_weights_path', type=str, default=None,
+                        help="Path to DeepLIIF model weights directory.")
     args = parser.parse_args()
 
     if not args.random_seed:
@@ -208,7 +210,11 @@ def main():
     # Initialize DeepLIIFStainer early so it can be passed to the evaluator
     deepliif_stainer = None
     if args.ki67_eval_method == 'deepliif' or getattr(model.hparams, 'deepliif_weights_path', None):
-        deepliif_weights_path = getattr(model.hparams, 'deepliif_weights_path', 'deepliif-weights/DeepLIIF_Latest_Model')
+        deepliif_weights_path = (
+            args.deepliif_weights_path 
+            or getattr(model.hparams, 'deepliif_weights_path', None) 
+            or 'deepliif-weights/DeepLIIF_Latest_Model'
+        )
         from src.models.deepliif_stainer import DeepLIIFStainer
         deepliif_stainer = DeepLIIFStainer(weights_path=deepliif_weights_path)
 
