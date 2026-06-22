@@ -167,6 +167,24 @@ def compute_image_quality_metrics(generated, real):
 # H&E structure similarity vs generated IHC
 # ======================================================================
 
+def _edge_map(x):
+    """Extract Sobel edges and normalize to [0, 1] robustly."""
+    sobel_x = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], dtype=torch.float32, device=x.device).view(1, 1, 3, 3)
+    sobel_y = sobel_x.transpose(-1, -2)
+    # Pad to maintain size
+    gx = F.conv2d(x, sobel_x, padding=1)
+    gy = F.conv2d(x, sobel_y, padding=1)
+    edge = (gx**2 + gy**2 + 1e-8).sqrt()
+    
+    # Robust normalization per image
+    b, c, h, w = edge.shape
+    edge_flat = edge.view(b, c, -1)
+    e_min = torch.quantile(edge_flat, 0.01, dim=-1).view(b, c, 1, 1)
+    e_max = torch.quantile(edge_flat, 0.99, dim=-1).view(b, c, 1, 1)
+    
+    edge_norm = (edge - e_min) / (e_max - e_min + 1e-6)
+    return torch.clamp(edge_norm, 0, 1)
+
 def compute_he_structure_metrics(generated, he_reference, resize_to=256):
     """Structural similarity between generated IHC and H&E reference.
 
@@ -185,6 +203,7 @@ def compute_he_structure_metrics(generated, he_reference, resize_to=256):
     """
     from torchmetrics.image import StructuralSimilarityIndexMeasure
 
+    ssim_metric = StructuralSimilarityIndexMeasure(data_range=1.0)
     ssim_vals = []
     for i in range(0, len(generated), 16):
         gen = F.interpolate(generated[i:i+16].float(), size=resize_to, mode='bilinear', align_corners=False)
@@ -196,7 +215,7 @@ def compute_he_structure_metrics(generated, he_reference, resize_to=256):
         gen_edge = _edge_map(gen_gray)
         he_edge = _edge_map(he_gray)
 
-        ssim_vals.append(ssim(gen_edge, he_edge).item())
+        ssim_vals.append(ssim_metric(gen_edge, he_edge).item())
 
     return {
         'he_structure_ssim': float(np.mean(ssim_vals)),
@@ -620,9 +639,17 @@ def compute_he_h_ssim(generated, target_img, is_target_he=False, dab_extractor=N
     h_gen = torch.cat(h_gen_list)
     h_real = torch.cat(h_real_list)
 
-    # Ensure [0, 1] range
-    h_gen = (h_gen - h_gen.min()) / (h_gen.max() - h_gen.min() + 1e-6)
-    h_real = (h_real - h_real.min()) / (h_real.max() - h_real.min() + 1e-6)
+    # Ensure [0, 1] range robustly per image
+    def robust_normalize(t):
+        N = t.shape[0]
+        t_flat = t.view(N, -1)
+        # Use 1st and 99th percentiles to avoid extreme optical density outliers
+        p1 = torch.quantile(t_flat, 0.01, dim=1).view(N, 1, 1)
+        p99 = torch.quantile(t_flat, 0.99, dim=1).view(N, 1, 1)
+        return torch.clamp((t - p1) / (p99 - p1 + 1e-6), 0, 1)
+
+    h_gen = robust_normalize(h_gen)
+    h_real = robust_normalize(h_real)
 
     # Stack to [N, 1, H, W] for SSIM
     h_gen_1ch = h_gen.unsqueeze(1)
@@ -685,9 +712,13 @@ def compute_he_nmi(generated, target_img, is_target_he=False, dab_extractor=None
         h_g = h_gen[i].flatten().numpy()
         h_r = h_real[i].flatten().numpy()
 
-        # Normalize to [0, 1] for consistent histogram binning
-        h_g_norm = (h_g - h_g.min()) / (h_g.max() - h_g.min() + 1e-6)
-        h_r_norm = (h_r - h_r.min()) / (h_r.max() - h_r.min() + 1e-6)
+        # Normalize to [0, 1] using robust 1st and 99th percentiles for consistent histogram binning
+        # without being ruined by extreme optical density outliers
+        p1_g, p99_g = np.percentile(h_g, [1, 99])
+        p1_r, p99_r = np.percentile(h_r, [1, 99])
+        
+        h_g_norm = np.clip((h_g - p1_g) / (p99_g - p1_g + 1e-6), 0, 1)
+        h_r_norm = np.clip((h_r - p1_r) / (p99_r - p1_r + 1e-6), 0, 1)
 
         # Joint histogram
         hist_2d, _, _ = np.histogram2d(h_g_norm, h_r_norm, bins=n_bins, range=[[0, 1], [0, 1]])
