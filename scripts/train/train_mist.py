@@ -108,11 +108,11 @@ def main():
         l1_lowres_weight=0.5,
         adversarial_weight=0.0,
         uncond_disc_weight=1.0,
-        dab_intensity_weight=0.2,
+        dab_intensity_weight=0.0,    # replaced by MLPA
         dab_contrast_weight=0.0,    # No class ordering across stains
         dab_sharpness_weight=0.0,
         gram_style_weight=0.0,
-        mlpa_weight=0.5,
+        mlpa_weight=1.0,
         ctpc_weight=2.5,
         edge_weight=0.0,
         crop_disc_weight=0.0,

@@ -12,6 +12,8 @@ eval_output/
 output_logs/
 jobs/
 *.ckpt
+*.pth
+pretrain/
 
 .vscode/
 .idea/
