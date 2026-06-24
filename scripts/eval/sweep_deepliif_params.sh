@@ -78,6 +78,8 @@ for SEG in "${SEG_THRESHOLDS[@]}"; do
         echo "  [$CURRENT/$TOTAL] seg_thresh=$SEG  marker_thresh=$MARKER"
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
+        mkdir -p "$OUT_DIR"
+
         PYTHONPATH=. python scripts/eval/eval_mist.py \
             --load_images_from "$CACHE_DIR" \
             --data_dir "$DATA_DIR" \

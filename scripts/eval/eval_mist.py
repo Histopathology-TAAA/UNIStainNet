@@ -171,7 +171,7 @@ def generate_for_stain(model, uni_model, dataloader, stain_label, guidance_scale
 
 def main():
     parser = argparse.ArgumentParser(description='Evaluate UNIStainNet on MIST')
-    parser.add_argument('--checkpoint', type=str, required=True)
+    parser.add_argument('--checkpoint', type=str, default=None)
     parser.add_argument('--data_dir', type=str, required=True,
                         help='Path to MIST root directory')
     parser.add_argument('--stains', nargs='+', default=['HER2', 'Ki67', 'ER', 'PR'],
@@ -207,11 +207,15 @@ def main():
                         help='Skip FID/KID/LPIPS/SSIM/PSNR/DAB/IOD/structure metrics.')
     args = parser.parse_args()
 
+    # Validate: must provide either checkpoint or load_images_from
+    if args.checkpoint is None and args.load_images_from is None:
+        parser.error("Either --checkpoint or --load_images_from must be provided")
+
     if not args.random_seed:
         pl.seed_everything(42, workers=True)
 
     if args.output_dir is None:
-        ckpt_name = Path(args.checkpoint).stem
+        ckpt_name = Path(args.checkpoint).stem if args.checkpoint else Path(args.load_images_from).name
         args.output_dir = f'eval_output/mist/{ckpt_name}'
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
