@@ -197,6 +197,14 @@ def main():
                         help="DeepLIIF marker intensity threshold (int or 'default').")
     parser.add_argument('--min_nuclei', type=int, default=100,
                         help="Minimum number of real nuclei required to include a patch in the Ki67 clinical metrics. Default is 100.")
+    parser.add_argument('--save_images', action='store_true',
+                        help='Save generated/real/HE tensors as .pt files for reuse.')
+    parser.add_argument('--load_images_from', type=str, default=None,
+                        help='Skip generation — load pre-saved .pt tensors from this dir.')
+    parser.add_argument('--skip_clinical', action='store_true',
+                        help='Skip Ki67 clinical evaluation.')
+    parser.add_argument('--skip_image_quality', action='store_true',
+                        help='Skip FID/KID/LPIPS/SSIM/PSNR/DAB/IOD/structure metrics.')
     args = parser.parse_args()
 
     if not args.random_seed:
@@ -212,17 +220,25 @@ def main():
     print(f"EVALUATION: UNIStainNet on MIST")
     print(f"  Stains: {args.stains}")
     print("=" * 70)
-    print(f"Checkpoint: {args.checkpoint}")
 
-    # Load model
-    model = UNIStainNetTrainer.load_from_checkpoint(args.checkpoint, strict=False)
-    model = model.cuda().eval()
+    # --- Load-from-disk path: skip model loading + generation entirely ---
+    if args.load_images_from:
+        load_dir = Path(args.load_images_from)
+        print(f"Loading pre-generated images from: {load_dir}")
+        # Model / UNI are not needed when loading pre-saved tensors
+        model = None
+        uni_model = None
+    else:
+        print(f"Checkpoint: {args.checkpoint}")
+        # Load model
+        model = UNIStainNetTrainer.load_from_checkpoint(args.checkpoint, strict=False)
+        model = model.cuda().eval()
 
     # Control the Alignment Network (STN) during evaluation.
-    # By default, bypassing the STN entirely guarantees 100% structural fidelity 
+    # By default, bypassing the STN entirely guarantees 100% structural fidelity
     # to the input H&E and prevents interpolation blur from degrading the SSIM/NMI metrics.
     # However, it can be enabled via the --enable_stn_alignment flag.
-    if args.enable_stn_alignment:
+    if args.enable_stn_alignment and model is not None:
         if not hasattr(model.generator, 'alignment_net'):
             print("WARNING: --enable_stn_alignment was passed, but this checkpoint was NOT trained with STN alignment.")
             print("STN evaluation will be skipped for this run.")
@@ -233,14 +249,20 @@ def main():
                 model.generator_ema.use_alignment = True
 
     # Read spatial size from checkpoint hparams (default 32 for backward compat)
-    spatial_pool_size = getattr(model.hparams, 'uni_spatial_size', 32)
+    if model is not None:
+        spatial_pool_size = getattr(model.hparams, 'uni_spatial_size', 32)
+    else:
+        spatial_pool_size = 32  # fallback when loading pre-generated images
     print(f"UNI spatial size: {spatial_pool_size}x{spatial_pool_size}")
 
-    # Load UNI
-    uni_model = load_uni_model()
+    # Load UNI (skip when loading pre-generated images)
+    if args.load_images_from:
+        uni_model = None
+    else:
+        uni_model = load_uni_model()
 
     results = {
-        'checkpoint': args.checkpoint,
+        'checkpoint': args.checkpoint if not args.load_images_from else str(args.load_images_from),
         'guidance_scale': args.guidance_scale,
         'dataset': 'MIST',
         'stains': args.stains,
@@ -251,7 +273,10 @@ def main():
 
     # Initialize DeepLIIFStainer early so it can be passed to the evaluator
     deepliif_stainer = None
-    if args.ki67_eval_method == 'deepliif' or getattr(model.hparams, 'deepliif_weights_path', None):
+    needs_deepliif = args.ki67_eval_method == 'deepliif'
+    if model is not None:
+        needs_deepliif = needs_deepliif or getattr(model.hparams, 'deepliif_weights_path', None)
+    if needs_deepliif:
         # For evaluation, we MUST use the full DeepLIIF ensemble directory, not just G1.
         deepliif_weights_path = 'deepliif-weights/DeepLIIF_Latest_Model'
         from src.models.deepliif_stainer import DeepLIIFStainer
@@ -279,86 +304,110 @@ def main():
         print(f"{'='*50}")
 
         # Data for this stain
-        dm = MISTMultiStainCropDataModule(
-            base_dir=args.data_dir,
-            stains=[stain],
-            batch_size=args.batch_size,
-            num_workers=4,
-            image_size=(512, 512),
-            crop_size=512,
-            null_class=stain_label,
-        )
-        dm.setup('test')
-        test_loader = dm.val_dataloader()
-
-        # Initialize DeepLIIF if checkpoint used it
-        hema_channels = getattr(model.hparams, 'hema_channels', 1)
-        # DeepLIIF logic is now handled above globally for this script
-        if args.aligned and hasattr(model.generator, 'use_alignment') and model.generator.use_alignment:
-            pass # deepliif_stainer is already initialized above if needed
-            print(f"[INFO] DeepLIIF is enabled. Using {hema_channels}-channel setup.")
-
-        # Generate
-        gen, real, he, fnames = generate_for_stain(
-            model, uni_model, test_loader, stain_label,
-            guidance_scale=args.guidance_scale,
-            seed=None if args.random_seed else 42,
-            spatial_pool_size=spatial_pool_size,
-            no_downcasting=args.no_downcasting,
-            aligned=args.aligned,
-            deepliif_stainer=deepliif_stainer,
-            hema_channels=hema_channels,
-        )
-        print(f"Generated {len(gen)} images")
-
-        if args.composite_bg:
-            gen = composite_background(gen, he)
-
-        # Save sample grid
         stain_dir = output_dir / stain_lower
         stain_dir.mkdir(parents=True, exist_ok=True)
+
+        if args.load_images_from:
+            # --- Load pre-saved tensors from disk ---
+            load_dir = Path(args.load_images_from) / stain_lower
+            gen  = torch.load(load_dir / 'gen.pt',  map_location='cpu', weights_only=False)
+            real = torch.load(load_dir / 'real.pt', map_location='cpu', weights_only=False)
+            he   = torch.load(load_dir / 'he.pt',   map_location='cpu', weights_only=False)
+            fnames_path = load_dir / 'fnames.txt'
+            fnames = open(fnames_path).read().splitlines() if fnames_path.exists() else []
+            print(f"Loaded {len(gen)} pre-generated images from {load_dir}")
+        else:
+            # --- Generate from scratch ---
+            dm = MISTMultiStainCropDataModule(
+                base_dir=args.data_dir,
+                stains=[stain],
+                batch_size=args.batch_size,
+                num_workers=4,
+                image_size=(512, 512),
+                crop_size=512,
+                null_class=stain_label,
+            )
+            dm.setup('test')
+            test_loader = dm.val_dataloader()
+
+            hema_channels = getattr(model.hparams, 'hema_channels', 1)
+            if args.aligned and hasattr(model.generator, 'use_alignment') and model.generator.use_alignment:
+                print(f"[INFO] DeepLIIF is enabled. Using {hema_channels}-channel setup.")
+
+            gen, real, he, fnames = generate_for_stain(
+                model, uni_model, test_loader, stain_label,
+                guidance_scale=args.guidance_scale,
+                seed=None if args.random_seed else 42,
+                spatial_pool_size=spatial_pool_size,
+                no_downcasting=args.no_downcasting,
+                aligned=args.aligned,
+                deepliif_stainer=deepliif_stainer,
+                hema_channels=hema_channels,
+            )
+            print(f"Generated {len(gen)} images")
+
+            if args.composite_bg:
+                gen = composite_background(gen, he)
+
+            # Optionally save to disk for reuse
+            if args.save_images:
+                torch.save(gen,   stain_dir / 'gen.pt')
+                torch.save(real,  stain_dir / 'real.pt')
+                torch.save(he,    stain_dir / 'he.pt')
+                (stain_dir / 'fnames.txt').write_text('\n'.join(fnames))
+                print(f"  Saved generated images to {stain_dir}")
+
+        # Save sample grid
         save_sample_grid(he, real, gen, stain_dir / 'sample_grid.png', n=16)
 
         stain_results = {}
 
-        # Image quality
-        print(f"  Computing image quality metrics...")
-        stain_results['image_quality'] = compute_image_quality_metrics(gen, real)
+        # Image quality (skip if only running clinical sweep)
+        if not args.skip_image_quality:
+            print(f"  Computing image quality metrics...")
+            stain_results['image_quality'] = compute_image_quality_metrics(gen, real)
 
-        # DAB metrics (no class labels for MIST)
-        print(f"  Computing DAB metrics...")
-        stain_results['dab'] = compute_dab_metrics(gen, real, labels=None, dab_extractor=dab_extractor)
+            # DAB metrics (no class labels for MIST)
+            print(f"  Computing DAB metrics...")
+            stain_results['dab'] = compute_dab_metrics(gen, real, labels=None, dab_extractor=dab_extractor)
 
-        # IOD metrics
-        print(f"  Computing IOD metrics...")
-        stain_results['iod'] = compute_iod_metrics(gen, real, labels=None)
+            # IOD metrics
+            print(f"  Computing IOD metrics...")
+            stain_results['iod'] = compute_iod_metrics(gen, real, labels=None)
 
-        # HE-H SSIM and HE-NMI metrics
-        print(f"  Computing structure metrics...")
-        struct_target = real if args.aligned else he
-        is_target_he = not args.aligned
-        
-        h_ssim = compute_he_h_ssim(gen, struct_target, is_target_he=is_target_he, dab_extractor=dab_extractor)
-        nmi = compute_he_nmi(gen, struct_target, is_target_he=is_target_he, dab_extractor=dab_extractor)
-        
-        prefix = 'ihc' if args.aligned else 'he'
-        stain_results['he_structure'] = {
-            f'{prefix}_h_ssim_mean': h_ssim['ssim_mean'],
-            f'{prefix}_h_ssim_std': h_ssim['ssim_std'],
-            f'{prefix}_nmi_mean': nmi['nmi_mean'],
-            f'{prefix}_nmi_std': nmi['nmi_std'],
-        }
+            # HE-H SSIM and HE-NMI metrics
+            print(f"  Computing structure metrics...")
+            struct_target = real if args.aligned else he
+            is_target_he = not args.aligned
 
-        # UNI-FID (per-stain)
-        if not args.skip_uni_fid:
-            print(f"  Computing UNI-FID...")
-            try:
-                stain_results['image_quality']['fid_uni'] = compute_uni_fid(gen, real)
-            except Exception as e:
-                print(f"    UNI-FID skipped: {e}")
+            h_ssim = compute_he_h_ssim(gen, struct_target, is_target_he=is_target_he, dab_extractor=dab_extractor)
+            nmi = compute_he_nmi(gen, struct_target, is_target_he=is_target_he, dab_extractor=dab_extractor)
+
+            prefix = 'ihc' if args.aligned else 'he'
+            stain_results['he_structure'] = {
+                f'{prefix}_h_ssim_mean': h_ssim['ssim_mean'],
+                f'{prefix}_h_ssim_std': h_ssim['ssim_std'],
+                f'{prefix}_nmi_mean': nmi['nmi_mean'],
+                f'{prefix}_nmi_std': nmi['nmi_std'],
+            }
+
+            # UNI-FID (per-stain)
+            if not args.skip_uni_fid:
+                print(f"  Computing UNI-FID...")
+                try:
+                    stain_results['image_quality']['fid_uni'] = compute_uni_fid(gen, real)
+                except Exception as e:
+                    print(f"    UNI-FID skipped: {e}")
+        else:
+            # Placeholders so downstream code doesn't break
+            stain_results['image_quality'] = {}
+            stain_results['dab'] = {}
+            stain_results['iod'] = {}
+            stain_results['he_structure'] = {}
+            prefix = 'he'
 
         # Ki67 Clinical Evaluation (cell-level metrics)
-        if stain == 'Ki67' and ki67_evaluator is not None:
+        if stain == 'Ki67' and ki67_evaluator is not None and not args.skip_clinical:
             method_label = "DeepLIIF" if args.ki67_eval_method == 'deepliif' else "StarDist"
             print(f"  Computing Ki67 clinical metrics ({method_label})...")
             real_li_scores = []
@@ -392,16 +441,17 @@ def main():
         results['per_stain'][stain] = stain_results
 
         # Print per-stain summary
-        iq = stain_results['image_quality']
-        dab = stain_results['dab']
-        he_struct = stain_results['he_structure']
-        print(f"\n  {stain}: FID={iq['fid_inception']:.1f} | "
-              f"KID={iq['kid_mean_x1000']:.1f} | "
-              f"LPIPS={iq['lpips_mean']:.3f} | "
-              f"SSIM={iq['ssim_mean']:.3f} | "
-              f"Pearson-r={dab.get('dab_pearson_r', 0):.3f} | "
-              f"{prefix.upper()}-H-SSIM={he_struct[f'{prefix}_h_ssim_mean']:.3f} | "
-              f"{prefix.upper()}-NMI={he_struct[f'{prefix}_nmi_mean']:.3f}")
+        if not args.skip_image_quality:
+            iq = stain_results['image_quality']
+            dab = stain_results['dab']
+            he_struct = stain_results['he_structure']
+            print(f"\n  {stain}: FID={iq['fid_inception']:.1f} | "
+                  f"KID={iq['kid_mean_x1000']:.1f} | "
+                  f"LPIPS={iq['lpips_mean']:.3f} | "
+                  f"SSIM={iq['ssim_mean']:.3f} | "
+                  f"Pearson-r={dab.get('dab_pearson_r', 0):.3f} | "
+                  f"{prefix.upper()}-H-SSIM={he_struct[f'{prefix}_h_ssim_mean']:.3f} | "
+                  f"{prefix.upper()}-NMI={he_struct[f'{prefix}_nmi_mean']:.3f}")
         if 'ki67_clinical' in stain_results:
             ki = stain_results['ki67_clinical']
             print(f"         Ki67: MAE={ki['ki67_li_mae']:.2f}% | "
@@ -410,13 +460,17 @@ def main():
                   f"Kappa={ki['ki67_tier_kappa']:.3f}")
 
         # Explicitly free memory before next stain
-        del gen, real, he, fnames
-        del dm, test_loader
+        del gen, real, he
+        if not args.load_images_from:
+            del dm, test_loader
         import gc
         gc.collect()
 
     # Free UNI model
-    del uni_model
+    if uni_model is not None:
+        del uni_model
+    if model is not None:
+        del model
     torch.cuda.empty_cache()
 
     # Macro-averaged summary

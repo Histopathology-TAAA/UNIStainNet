@@ -2,41 +2,71 @@
 set -uo pipefail
 # Note: no set -e — we want the sweep to continue even if one eval fails
 
-# DeepLIIF Ki67 Parameter Sweep
-# Sweeps seg_thresh and marker_thresh to find optimal evaluator calibration.
-# No ground truth needed — picks the config that maximizes Pearson-r
-# between real LI and fake LI, weighted by concordance and patch retention.
+# DeepLIIF Ki67 Parameter Sweep (fast two-pass version)
+# Pass 1: Generate images ONCE and save to disk
+# Pass 2: Run clinical eval 25 times with different params, loading from disk each time
 #
 # Usage: bash scripts/eval/sweep_deepliif_params.sh
 
 CHECKPOINT="./checkpoints/ki67_deepliif_run8/last.ckpt"
 DATA_DIR="/home/ahmed_ayman/data/Destained_MIST"
 SWEEP_DIR="./eval_output/deepliif_sweep"
+CACHE_DIR="${SWEEP_DIR}/cached_images"
 MIN_NUCLEI=80
 STAIN="Ki67"
 
-mkdir -p "$SWEEP_DIR"
+mkdir -p "$SWEEP_DIR" "$CACHE_DIR"
 
 SEG_THRESHOLDS=(80 100 130 160 200)
 MARKER_THRESHOLDS=("default" "None" "50" "80" "120")
 
 TOTAL=$(( ${#SEG_THRESHOLDS[@]} * ${#MARKER_THRESHOLDS[@]} ))
-CURRENT=0
 RESULTS_FILE="$SWEEP_DIR/sweep_summary.txt"
 
+# =========================================================================
+# Pass 1: Generate images once and cache them
+# =========================================================================
+echo "============================================================"
+echo "  Pass 1: Generating images (cached to $CACHE_DIR)"
+echo "============================================================"
+
+if [ -f "${CACHE_DIR}/ki67/gen.pt" ]; then
+    echo "  [SKIP] Cached images already exist at ${CACHE_DIR}/ki67/"
+else
+    PYTHONPATH=. python scripts/eval/eval_mist.py \
+        --checkpoint "$CHECKPOINT" \
+        --data_dir "$DATA_DIR" \
+        --stains "$STAIN" \
+        --output_dir "$CACHE_DIR" \
+        --ki67_eval_method deepliif \
+        --min_nuclei "$MIN_NUCLEI" \
+        --skip_uni_fid \
+        --skip_clinical \
+        --save_images \
+        2>&1 | tee "${CACHE_DIR}/generation_log.txt"
+    echo ""
+    echo "  Generation complete. Images saved to ${CACHE_DIR}/ki67/"
+fi
+
+# =========================================================================
+# Pass 2: Sweep clinical eval parameters over cached images
+# =========================================================================
+echo ""
+echo "============================================================"
+echo "  Pass 2: Clinical parameter sweep ($TOTAL configs)"
 echo "============================================================" | tee "$RESULTS_FILE"
-echo "  DeepLIIF Parameter Sweep" | tee -a "$RESULTS_FILE"
 echo "  Checkpoint: $CHECKPOINT" | tee -a "$RESULTS_FILE"
-echo "  Configs to evaluate: $TOTAL" | tee -a "$RESULTS_FILE"
+echo "  Cached images: ${CACHE_DIR}/ki67/" | tee -a "$RESULTS_FILE"
 echo "============================================================" | tee -a "$RESULTS_FILE"
 echo "" | tee -a "$RESULTS_FILE"
-printf "%-6s %-14s %-14s %-10s %-10s %-12s %-10s %-10s %-10s\n" \
-    "Seg" "Marker" "Pearson-r" "MAE" "Concord%" "Kappa" "Dropped" "RealLIμ" "Score" \
+printf "%-6s %-14s %-12s %-10s %-10s %-12s %-10s %-10s %-10s\n" \
+    "Seg" "Marker" "Pearson-r" "MAE" "Concord%" "Kappa" "N_Images" "RealLIμ" "Score" \
     | tee -a "$RESULTS_FILE"
-printf "%-6s %-14s %-14s %-10s %-10s %-12s %-10s %-10s %-10s\n" \
-    "-----" "--------------" "--------------" "----------" "----------" "------------" "----------" "----------" "----------" \
+printf "%-6s %-14s %-12s %-10s %-10s %-12s %-10s %-10s %-10s\n" \
+    "-----" "--------------" "------------" "----------" "----------" "------------" "----------" "----------" "----------" \
     | tee -a "$RESULTS_FILE"
 
+CURRENT=0
 for SEG in "${SEG_THRESHOLDS[@]}"; do
     for MARKER in "${MARKER_THRESHOLDS[@]}"; do
         CURRENT=$((CURRENT + 1))
@@ -49,7 +79,7 @@ for SEG in "${SEG_THRESHOLDS[@]}"; do
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
         PYTHONPATH=. python scripts/eval/eval_mist.py \
-            --checkpoint "$CHECKPOINT" \
+            --load_images_from "$CACHE_DIR" \
             --data_dir "$DATA_DIR" \
             --stains "$STAIN" \
             --output_dir "$OUT_DIR" \
@@ -57,7 +87,7 @@ for SEG in "${SEG_THRESHOLDS[@]}"; do
             --seg_thresh "$SEG" \
             --marker_thresh "$MARKER" \
             --min_nuclei "$MIN_NUCLEI" \
-            --skip_uni_fid \
+            --skip_image_quality \
             2>&1 | tee "${OUT_DIR}/eval_log.txt"
 
         # Parse results
@@ -67,7 +97,7 @@ for SEG in "${SEG_THRESHOLDS[@]}"; do
 import json
 with open('$RESULT_JSON') as f:
     d = json.load(f)
-ki = d['per_stain']['Ki67']['ki67_clinical']
+ki = d['per_stain']['Ki67'].get('ki67_clinical', {})
 pearson  = ki.get('ki67_li_pearson_r', 0.0)
 mae      = ki.get('ki67_li_mae', 0.0)
 concord  = ki.get('ki67_tier_concordance', 0.0)
@@ -87,12 +117,12 @@ print(f'{pearson:.4f}|{mae:.4f}|{concord:.4f}|{kappa:.4f}|{n_images}|{real_li:.2
             REAL_LI_MEAN=$(echo "$PARSE" | cut -d'|' -f6)
             SCORE=$(echo "$PARSE" | cut -d'|' -f7)
 
-            printf "%-6s %-14s %-14s %-10s %-10s %-12s %-10s %-10s %-10s\n" \
+            printf "%-6s %-14s %-12s %-10s %-10s %-12s %-10s %-10s %-10s\n" \
                 "$SEG" "$MARKER" "$PEARSON" "$MAE" "$CONCORDANCE" "$KAPPA" "$EVAL_COUNT" "$REAL_LI_MEAN" "$SCORE" \
                 | tee -a "$RESULTS_FILE"
         else
             echo "  [WARN] No results.json — eval may have crashed" | tee -a "$RESULTS_FILE"
-            printf "%-6s %-14s %-14s %-10s %-10s %-12s %-10s %-10s %-10s\n" \
+            printf "%-6s %-14s %-12s %-10s %-10s %-12s %-10s %-10s %-10s\n" \
                 "$SEG" "$MARKER" "FAILED" "—" "—" "—" "—" "—" "—" \
                 | tee -a "$RESULTS_FILE"
         fi
@@ -105,8 +135,8 @@ echo "  Sweep complete." | tee -a "$RESULTS_FILE"
 echo "  Summary: $RESULTS_FILE" | tee -a "$RESULTS_FILE"
 echo "============================================================" | tee -a "$RESULTS_FILE"
 
-# Print the winner
+# Print top 5
 echo "" | tee -a "$RESULTS_FILE"
 echo "Top 5 configs by score:" | tee -a "$RESULTS_FILE"
-tail -n +5 "$RESULTS_FILE" | head -n -4 | sed '/^$/d' | sed '/^━/d' \
+tail -n +7 "$RESULTS_FILE" | sed '/^$/d' | sed '/^━/d' | sed '/^=====/d' \
     | sort -k9 -rg | head -5 | tee -a "$RESULTS_FILE"
