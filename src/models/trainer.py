@@ -24,6 +24,7 @@ import torchvision
 import wandb
 from torchmetrics.image.fid import FrechetInceptionDistance
 
+from src.models.pals import MLPA_LOSS
 from src.models.discriminator import (
     PatchDiscriminator, MultiScaleDiscriminator,
     hinge_loss_d, hinge_loss_g, r1_gradient_penalty, feature_matching_loss,
@@ -110,6 +111,7 @@ class UNIStainNetTrainer(pl.LightningModule):
         dab_contrast_weight=0.05,
         dab_sharpness_weight=0.0,
         gram_style_weight=0.0,
+        mlpa_weight=0.0,
         edge_weight=0.0,
         he_edge_weight=0.0,
         bg_white_weight=0.0,
@@ -249,6 +251,13 @@ class UNIStainNetTrainer(pl.LightningModule):
         self.val_fid.requires_grad_(False)
 
         self.dab_extractor = DABExtractor(device='cpu')
+
+        # MLPA — Multi-Level Protein Awareness loss (PGVMS TMI 2026)
+        if mlpa_weight > 0:
+            from src.models.pals import MLPA_LOSS
+            self.criterion_mlpa = MLPA_LOSS().to(self.device)
+        else:
+            self.criterion_mlpa = None
 
         # VGG feature extractor for Gram-matrix style loss
         if gram_style_weight > 0:
@@ -936,6 +945,13 @@ class UNIStainNetTrainer(pl.LightningModule):
             loss_g = loss_g + self.hparams.dab_sharpness_weight * loss_dab_sharp
             self.log('train/dab_sharpness', loss_dab_sharp, prog_bar=False)
 
+        # MLPA — Multi-Level Protein Awareness loss (PGVMS)
+        # Compares generated IHC against real IHC target (her2), which is
+        # available in every batch regardless of Case A/B.
+        if self.hparams.mlpa_weight > 0 and self.criterion_mlpa is not None:
+            loss_mlpa, _, _ = self.criterion_mlpa(generated, her2)
+            loss_g = loss_g + self.hparams.mlpa_weight * loss_mlpa
+            self.log('train/mlpa', loss_mlpa, prog_bar=False)
 
         # Gram-matrix style loss
         if self.hparams.gram_style_weight > 0 and self.vgg_extractor is not None:

@@ -88,7 +88,7 @@ def main():
         # Architecture (identical to BCI except no class conditioning)
         num_classes=5,          # 4 stains + null
         null_class=4,
-        class_dim=64,
+        class_dim=256,
         uni_dim=1024,
         ndf=64,
         input_skip=True,
@@ -112,6 +112,7 @@ def main():
         dab_contrast_weight=0.0,    # No class ordering across stains
         dab_sharpness_weight=0.0,
         gram_style_weight=0.0,
+        mlpa_weight=0.5,
         edge_weight=0.0,
         crop_disc_weight=0.0,
         feat_match_weight=10.0,
