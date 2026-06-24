@@ -846,3 +846,94 @@ PYTHONPATH=. python scripts/train/train_mist.py \
     --batch_size 8 \
     --wandb_name "ki67_deepliif_run6" \
     --max_epochs 150 
+PYTHONPATH=. python scripts/eval/eval_mist.py \
+  --checkpoint "./checkpoints/ki67_deepliif_run6/last.ckpt" \
+  --data_dir "/home/ahmed_ayman/data/Destained_MIST" \
+  --stains Ki67 \
+  --output_dir "./eval_output/ki67_deepliif_run6" \
+  --enable_stn_alignment \
+  --ki67_eval_method deepliif \
+  --seg_thresh 130  \
+  --marker_thresh default   \
+  --min_nuclei 100 
+
+
+# Line ~120-128 — change these three:
+  adversarial_weight=0.0,      # → 0.5
+  gram_style_weight=0.0,       # → 0.5
+  dab_contrast_weight=0.0,     # → 0.2
+
+  Everything else stays exactly as Run 6.
+
+  Then run:
+
+  PYTHONPATH=. python scripts/train/train_mist.py \
+      --data_dir /home/ahmed_ayman/data/Destained_MIST \
+      --ckpt_dir "./checkpoints/ki67_deepliif_run7" \
+      --stains Ki67 \
+      --deepliif_weights_path deepliif-weights/DeepLIIF_Latest_Model/latest_net_G1.pth \
+      --case_a_prob 1.0 \
+      --case_a_warmup_epochs 60 \
+      --case_a_anneal_epochs 40 \
+      --case_a_end_prob 0.05 \
+      --use_alignment \
+      --batch_size 8 \
+      --wandb_name "ki67_deepliif_run7" \
+      --max_epochs 150
+PYTHONPATH=. python scripts/eval/eval_mist.py \
+  --checkpoint "./checkpoints/ki67_deepliif_run7/last.ckpt" \
+  --data_dir "/home/ahmed_ayman/data/Destained_MIST" \
+  --stains Ki67 \
+  --output_dir "./eval_output/ki67_deepliif_run7" \
+  --enable_stn_alignment \
+  --ki67_eval_method deepliif \
+  --seg_thresh 130  \
+  --marker_thresh default   \
+  --min_nuclei 100
+
+  ============================================================
+  Ki67 CLINICAL EVALUATION  (DeepLIIF Gold Standard)
+============================================================
+  Images evaluated      : 891
+  Real  LI (mean ± std) : 28.34% ± 23.19%
+  Fake  LI (mean ± std) : 25.71% ± 22.69%
+------------------------------------------------------------
+  MAE (LI %)            : 10.10 ± 10.58
+  Pearson r             : 0.8035  (p=1.78e-202)
+  Tier Concordance      : 67.6%
+  Weighted Kappa        : 0.5994
+============================================================
+
+
+  Ki67: FID=53.6 | KID=24.4 | LPIPS=0.509 | SSIM=0.281 | Pearson-r=0.881 | HE-H-SSIM=0.150 | HE-NMI=0.028
+         Ki67: MAE=10.10% | r=0.804 | Concordance=67.6% | Kappa=0.599
+
+======================================================================
+MACRO-AVERAGED RESULTS
+======================================================================
+Metric                   Ki67    Macro
+--------------------------------------
+fid_inception          53.605   53.605
+fid_uni               395.805  395.805
+kid_mean_x1000         24.395   24.395
+lpips_mean              0.509    0.509
+lpips_128_mean          0.330    0.330
+ssim_mean               0.281    0.281
+psnr_mean              14.460   14.460
+dab_mae_overall         0.140    0.140
+dab_pearson_r           0.881    0.881
+dab_kl                  0.219    0.219
+dab_jsd                 0.049    0.049
+miod_diff              -0.006   -0.006
+miod_abs_diff           0.024    0.024
+he_h_ssim_mean          0.150    0.150
+he_nmi_mean             0.028    0.028
+ki67_li_mae            10.096   10.096
+ki67_li_pearson_r       0.804    0.804
+ki67_tier_concordance    0.676    0.676
+ki67_tier_kappa         0.599    0.599
+
+Results saved to eval_output/ki67_deepliif_run7/results.json
+
+PYTHONPATH=. python scripts/train/train_mist.py       --data_dir /home/ahmed_ayman/data/Destained_MIST       --ckpt_dir "./checkpoints/ki67_deepliif_run8"       --stains Ki67       --deepliif_weights_path deepliif-weights/DeepLIIF_Latest_Model/latest_net_G1.pth       --case_a_prob 1.0       --case_a_warmup_epochs 60       --case_a_anneal_epochs 40       --case_a_end_prob 0.05       --use_alignment       --batch_size 8       --wandb_name "ki67_deepliif_run8"       --max_epochs 150       --he_rgb_dropout 0.1
+PYTHONPATH=. python scripts/eval/eval_mist.py   --checkpoint "./checkpoints/ki67_deepliif_run8/last.ckpt"   --data_dir "/home/ahmed_ayman/data/Destained_MIST"   --stains Ki67   --output_dir "./eval_output/ki67_deepliif_run8"   --enable_stn_alignment   --ki67_eval_method deepliif   --seg_thresh 130   --marker_thresh default   --min_nuclei 100

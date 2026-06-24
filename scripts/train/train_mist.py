@@ -103,9 +103,9 @@ def main():
         # Loss weights (paper configuration)
         lpips_weight=1.0,
         lpips_256_weight=0.5,
-        lpips_512_weight=0.0,
-        he_edge_weight=0.5,
-        l1_lowres_weight=1.0,
+        lpips_512_weight=0.25,
+        he_edge_weight=2.0,
+        l1_lowres_weight=0.5,
         adversarial_weight=0.0,
         uncond_disc_weight=1.0,
         dab_intensity_weight=0.2,
