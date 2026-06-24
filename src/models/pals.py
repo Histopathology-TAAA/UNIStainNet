@@ -286,8 +286,8 @@ class MLPA_LOSS(nn.Module):
         batch_sums = torch.zeros(features.shape[0], num_bins, device=device)
         for i in range(features.shape[0]):
             for j in range(num_bins):
-                indices_in_bin = (histo_indices[i] == j).nonzero(as_tuple=True)
-                if indices_in_bin[0].numel() > 0:
-                    batch_sums[i, j] = torch.sum(features[i, indices_in_bin])
+                indices = (histo_indices[i] == j).nonzero(as_tuple=True)[0]
+                if indices.numel() > 0:
+                    batch_sums[i, j] = torch.sum(features[i, indices])
 
         return batch_sums

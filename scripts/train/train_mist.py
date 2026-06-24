@@ -175,7 +175,7 @@ def main():
     lr_monitor = LearningRateMonitor(logging_interval='step')
 
     wandb_logger = WandbLogger(
-        project='Destaining-unistainnet-v4',
+        project='UNIStainNet-PGVMS',
         name=args.wandb_name,
         save_dir='wandb',
     )
