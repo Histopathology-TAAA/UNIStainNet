@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -uo pipefail
+# Note: no set -e — we want the sweep to continue even if one eval fails
 
 # DeepLIIF Ki67 Parameter Sweep
 # Sweeps seg_thresh and marker_thresh to find optimal evaluator calibration.
@@ -62,57 +63,29 @@ for SEG in "${SEG_THRESHOLDS[@]}"; do
         # Parse results
         RESULT_JSON="${OUT_DIR}/results.json"
         if [ -f "$RESULT_JSON" ]; then
-            PEARSON=$(python3 -c "
+            PARSE=$(python3 -c "
 import json
 with open('$RESULT_JSON') as f:
     d = json.load(f)
-print(d['per_stain']['Ki67']['clinical']['ki67_li_pearson_r'])
-" 2>/dev/null || echo "NA")
+ki = d['per_stain']['Ki67']['ki67_clinical']
+pearson  = ki.get('ki67_li_pearson_r', 0.0)
+mae      = ki.get('ki67_li_mae', 0.0)
+concord  = ki.get('ki67_tier_concordance', 0.0)
+kappa    = ki.get('ki67_tier_kappa', 0.0)
+n_images = ki.get('ki67_n_images', 0)
+real_li  = ki.get('ki67_real_li_mean', 0.0)
+dropped  = 899.0 - float(n_images)
+score    = float(pearson) + 0.1 * float(concord) - 0.5 * (dropped / 899.0)
+print(f'{pearson:.4f}|{mae:.4f}|{concord:.4f}|{kappa:.4f}|{n_images}|{real_li:.2f}|{score:.4f}')
+" 2>/dev/null || echo "NA|NA|NA|NA|NA|NA|NA")
 
-            MAE=$(python3 -c "
-import json
-with open('$RESULT_JSON') as f:
-    d = json.load(f)
-print(d['per_stain']['Ki67']['clinical']['ki67_li_mae'])
-" 2>/dev/null || echo "NA")
-
-            CONCORDANCE=$(python3 -c "
-import json
-with open('$RESULT_JSON') as f:
-    d = json.load(f)
-print(d['per_stain']['Ki67']['clinical']['ki67_tier_concordance'])
-" 2>/dev/null || echo "NA")
-
-            KAPPA=$(python3 -c "
-import json
-with open('$RESULT_JSON') as f:
-    d = json.load(f)
-print(d['per_stain']['Ki67']['clinical']['ki67_tier_kappa'])
-" 2>/dev/null || echo "NA")
-
-            EVAL_COUNT=$(python3 -c "
-import json
-with open('$RESULT_JSON') as f:
-    d = json.load(f)
-print(d['per_stain']['Ki67']['clinical'].get('images_evaluated', 'NA'))
-" 2>/dev/null || echo "NA")
-
-            REAL_LI_MEAN=$(python3 -c "
-import json
-with open('$RESULT_JSON') as f:
-    d = json.load(f)
-print(d['per_stain']['Ki67']['clinical'].get('real_li_mean', 'NA'))
-" 2>/dev/null || echo "NA")
-
-            # Compute score
-            SCORE=$(python3 -c "
-pearson = float('$PEARSON') if '$PEARSON' != 'NA' else 0.0
-concord = float('$CONCORDANCE') if '$CONCORDANCE' != 'NA' else 0.0
-eval_count = float('$EVAL_COUNT') if '$EVAL_COUNT' != 'NA' else 899.0
-dropped = 899.0 - eval_count
-score = pearson + 0.1 * concord - 0.5 * (dropped / 899.0)
-print(f'{score:.4f}')
-" 2>/dev/null || echo "NA")
+            PEARSON=$(echo "$PARSE" | cut -d'|' -f1)
+            MAE=$(echo "$PARSE" | cut -d'|' -f2)
+            CONCORDANCE=$(echo "$PARSE" | cut -d'|' -f3)
+            KAPPA=$(echo "$PARSE" | cut -d'|' -f4)
+            EVAL_COUNT=$(echo "$PARSE" | cut -d'|' -f5)
+            REAL_LI_MEAN=$(echo "$PARSE" | cut -d'|' -f6)
+            SCORE=$(echo "$PARSE" | cut -d'|' -f7)
 
             printf "%-6s %-14s %-14s %-10s %-10s %-12s %-10s %-10s %-10s\n" \
                 "$SEG" "$MARKER" "$PEARSON" "$MAE" "$CONCORDANCE" "$KAPPA" "$EVAL_COUNT" "$REAL_LI_MEAN" "$SCORE" \
