@@ -113,6 +113,7 @@ def main():
         dab_sharpness_weight=0.0,
         gram_style_weight=0.0,
         mlpa_weight=0.5,
+        ctpc_weight=2.5,
         edge_weight=0.0,
         crop_disc_weight=0.0,
         feat_match_weight=10.0,

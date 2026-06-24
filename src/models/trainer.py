@@ -12,6 +12,7 @@ References:
     - Isola et al., "Image-to-Image Translation with pix2pix" (CVPR 2017)
 """
 
+import os
 import copy
 from collections import OrderedDict
 
@@ -25,6 +26,7 @@ import wandb
 from torchmetrics.image.fid import FrechetInceptionDistance
 
 from src.models.pals import MLPA_LOSS
+from src.models.pcls import UNet_pro, CTPC_LOSS
 from src.models.discriminator import (
     PatchDiscriminator, MultiScaleDiscriminator,
     hinge_loss_d, hinge_loss_g, r1_gradient_penalty, feature_matching_loss,
@@ -112,6 +114,7 @@ class UNIStainNetTrainer(pl.LightningModule):
         dab_sharpness_weight=0.0,
         gram_style_weight=0.0,
         mlpa_weight=0.0,
+        ctpc_weight=0.0,
         edge_weight=0.0,
         he_edge_weight=0.0,
         bg_white_weight=0.0,
@@ -258,6 +261,25 @@ class UNIStainNetTrainer(pl.LightningModule):
             self.criterion_mlpa = MLPA_LOSS().to(self.device)
         else:
             self.criterion_mlpa = None
+
+        # PCLS — Prototype-Consistent Learning (PGVMS TMI 2026)
+        # Frozen tumour-segmentation UNet for cross-image semantic consistency
+        if ctpc_weight > 0:
+            self.net_seg = UNet_pro(in_chns=3, class_num=2)
+            seg_path = 'pretrain/MIST_KI67_net_seg.pth'
+            if os.path.exists(seg_path):
+                self.net_seg.load_state_dict(torch.load(seg_path, map_location='cpu'))
+                print(f"[PCLS] Loaded pretrained UNet: {seg_path}")
+            else:
+                print(f"[PCLS] WARNING: {seg_path} not found — CTPC will be skipped")
+            self.net_seg = self.net_seg.to(self.device)
+            self.net_seg.requires_grad_(False)  # frozen
+            self.net_seg.eval()
+            self.criterion_ctpc = CTPC_LOSS
+            self.ce_loss = nn.CrossEntropyLoss().to(self.device)
+        else:
+            self.net_seg = None
+            self.criterion_ctpc = None
 
         # VGG feature extractor for Gram-matrix style loss
         if gram_style_weight > 0:
@@ -948,10 +970,43 @@ class UNIStainNetTrainer(pl.LightningModule):
         # MLPA — Multi-Level Protein Awareness loss (PGVMS)
         # Compares generated IHC against real IHC target (her2), which is
         # available in every batch regardless of Case A/B.
+        mlpa_masks = (None, None)  # (fake_masks, real_masks) for CTPC
         if self.hparams.mlpa_weight > 0 and self.criterion_mlpa is not None:
-            loss_mlpa, _, _ = self.criterion_mlpa(generated, her2)
+            loss_mlpa, mask_fake, mask_real = self.criterion_mlpa(generated, her2)
             loss_g = loss_g + self.hparams.mlpa_weight * loss_mlpa
             self.log('train/mlpa', loss_mlpa, prog_bar=False)
+            mlpa_masks = (mask_fake.detach(), mask_real.detach())
+
+        # CTPC — Cross-image Tumor Prototype Consistency (PGVMS)
+        # Uses MLPA pseudo-masks as ground truth for prototype extraction.
+        # Frozen UNet compares fake vs real IHC segmentation behaviour.
+        if (self.hparams.ctpc_weight > 0 and self.criterion_ctpc is not None
+                and self.net_seg is not None):
+            mask_fake, mask_real = mlpa_masks
+            if mask_fake is not None and mask_real is not None:
+                self.net_seg.eval()  # must re-freeze — Lightning calls .train() each step
+                loss_ctpc = 0.0
+                B = generated.shape[0]
+                for i in range(B):
+                    # Stack fake + real for cross-image prototype comparison
+                    image_dual = torch.cat([
+                        generated[i].unsqueeze(0),
+                        her2[i].unsqueeze(0),
+                    ], dim=0)  # [2, 3, H, W]
+                    mask_dual = torch.cat([
+                        mask_fake[i].unsqueeze(0).unsqueeze(1),
+                        mask_real[i].unsqueeze(0).unsqueeze(1),
+                    ], dim=0)  # [2, 1, H, W]
+
+                    _, crossproout = self.net_seg(image_dual)
+                    ctpci = self.criterion_ctpc(
+                        crossproout,
+                        mask_dual.long(),
+                        self.ce_loss,
+                    )
+                    loss_ctpc = loss_ctpc + torch.mean(ctpci)
+                loss_g = loss_g + self.hparams.ctpc_weight * (loss_ctpc / B)
+                self.log('train/ctpc', loss_ctpc / B, prog_bar=False)
 
         # Gram-matrix style loss
         if self.hparams.gram_style_weight > 0 and self.vgg_extractor is not None:
