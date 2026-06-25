@@ -111,9 +111,9 @@ def main():
         dab_intensity_weight=0.0,    # replaced by MLPA
         dab_contrast_weight=0.0,    # No class ordering across stains
         dab_sharpness_weight=0.0,
-        gram_style_weight=0.0,
-        mlpa_weight=1.0,
-        ctpc_weight=2.5,
+        gram_style_weight=0.5,       # Case A only — texture/FID
+        mlpa_weight=0.5,             # protein expression (PGVMS)
+        ctpc_weight=0.0,             # UNet features don't transfer to generated IHC
         edge_weight=0.0,
         crop_disc_weight=0.0,
         feat_match_weight=10.0,

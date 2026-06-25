@@ -1008,8 +1008,8 @@ class UNIStainNetTrainer(pl.LightningModule):
                 loss_g = loss_g + self.hparams.ctpc_weight * (loss_ctpc / B)
                 self.log('train/ctpc', loss_ctpc / B, prog_bar=False)
 
-        # Gram-matrix style loss
-        if self.hparams.gram_style_weight > 0 and self.vgg_extractor is not None:
+        # Gram-matrix style loss (Case A only — safe texture matching)
+        if self.hparams.gram_style_weight > 0 and self.vgg_extractor is not None and use_case_a:
             loss_gram = self.compute_gram_style_loss(generated, her2)
             loss_g = loss_g + self.hparams.gram_style_weight * loss_gram
             self.log('train/gram_style', loss_gram, prog_bar=False)
