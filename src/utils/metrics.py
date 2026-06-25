@@ -226,14 +226,26 @@ def compute_he_structure_metrics(generated, he_reference, resize_to=256):
 # UNI-FID (pathology-native Frechet distance)
 # ======================================================================
 
-def compute_uni_fid(generated, real):
+def compute_uni_fid(generated, real, pooling='spatial_mean'):
     """Frechet distance in UNI ViT-L/16 feature space.
 
-    Uses CLS token features from UNI (Chen et al., Nature Medicine 2024)
+    Uses spatial token features from UNI (Chen et al., Nature Medicine 2024)
     as a pathology-specific alternative to Inception FID.
+
+    Pooling strategies (misalignment robustness):
+        'spatial_mean'  — Average all 32×32 patch tokens → 1024-dim.
+                          Robust to tissue-plane shifts because features
+                          from all spatial regions are pooled equally.
+                          **Recommended.**
+        'cls'           — CLS token only → 1024-dim.  Sensitive to
+                          tissue-plane differences (legacy).
+        'spatial_quad'  — Split into 4 quadrants, mean-pool each →
+                          4096-dim.  Preserves regional anatomy while
+                          tolerating intra-quadrant shifts.
 
     Args:
         generated, real: [N, 3, H, W] in [-1, 1]
+        pooling: 'spatial_mean' | 'cls' | 'spatial_quad'
 
     Returns:
         float: UNI-FID value
@@ -251,7 +263,8 @@ def compute_uni_fid(generated, real):
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
 
-    def extract_cls_features(images):
+    def extract_features(images):
+        """Extract UNI features with the chosen pooling strategy."""
         feats = []
         for i in range(0, len(images), 16):
             batch = images[i:i+16].float()
@@ -259,11 +272,34 @@ def compute_uni_fid(generated, real):
             batch_norm = torch.stack([transform(img) for img in batch_01])
             with torch.no_grad():
                 out = uni_model.forward_features(batch_norm.cuda())
-                feats.append(out[:, 0, :].cpu())
+                # out shape: [B, 1025, 1024] — CLS + 32×32 patch tokens
+                tokens = out[:, 1:, :]   # [B, 1024, 1024] — drop CLS
+                B, N, D = tokens.shape   # B=16, N=1024 (32×32), D=1024
+
+                if pooling == 'cls':
+                    # Legacy: CLS token only
+                    feat = out[:, 0, :]  # [B, 1024]
+                elif pooling == 'spatial_mean':
+                    # Average all spatial tokens — misalignment-robust
+                    feat = tokens.mean(dim=1)  # [B, 1024]
+                elif pooling == 'spatial_quad':
+                    # 4-quadrant stratified pooling
+                    H = W = int(N ** 0.5)  # 32
+                    tokens_2d = tokens.reshape(B, H, W, D)  # [B, 32, 32, 1024]
+                    h2, w2 = H // 2, W // 2  # 16, 16
+                    q1 = tokens_2d[:, :h2, :w2, :].mean(dim=(1, 2))  # top-left
+                    q2 = tokens_2d[:, :h2, w2:, :].mean(dim=(1, 2))  # top-right
+                    q3 = tokens_2d[:, h2:, :w2, :].mean(dim=(1, 2))  # bottom-left
+                    q4 = tokens_2d[:, h2:, w2:, :].mean(dim=(1, 2))  # bottom-right
+                    feat = torch.cat([q1, q2, q3, q4], dim=1)  # [B, 4096]
+                else:
+                    raise ValueError(f"Unknown pooling: {pooling}")
+
+                feats.append(feat.cpu())
         return torch.cat(feats).numpy()
 
-    feats_gen = extract_cls_features(generated)
-    feats_real = extract_cls_features(real)
+    feats_gen = extract_features(generated)
+    feats_real = extract_features(real)
 
     mu_gen, mu_real = feats_gen.mean(0), feats_real.mean(0)
     sigma_gen = np.cov(feats_gen, rowvar=False)

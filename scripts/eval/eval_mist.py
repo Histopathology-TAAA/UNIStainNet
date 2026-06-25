@@ -201,6 +201,10 @@ def main():
                         help='Save generated/real/HE tensors as .pt files for reuse.')
     parser.add_argument('--load_images_from', type=str, default=None,
                         help='Skip generation — load pre-saved .pt tensors from this dir.')
+    parser.add_argument('--uni_fid_pooling', type=str, default='spatial_mean',
+                        choices=['spatial_mean', 'cls', 'spatial_quad', 'all'],
+                        help='UNI-FID pooling strategy. spatial_mean=avg all tokens (misalignment-robust), '
+                             'cls=CLS token only (legacy), spatial_quad=4-quadrant, all=compute all three.')
     parser.add_argument('--skip_clinical', action='store_true',
                         help='Skip Ki67 clinical evaluation.')
     parser.add_argument('--skip_image_quality', action='store_true',
@@ -397,9 +401,20 @@ def main():
 
             # UNI-FID (per-stain)
             if not args.skip_uni_fid:
-                print(f"  Computing UNI-FID...")
+                print(f"  Computing UNI-FID (pooling={args.uni_fid_pooling})...")
                 try:
-                    stain_results['image_quality']['fid_uni'] = compute_uni_fid(gen, real)
+                    if args.uni_fid_pooling == 'all':
+                        for method in ['spatial_mean', 'cls', 'spatial_quad']:
+                            fid_val = compute_uni_fid(gen, real, pooling=method)
+                            key = f'fid_uni_{method}'
+                            stain_results['image_quality'][key] = fid_val
+                            print(f"    UNI-FID ({method}): {fid_val:.1f}")
+                        # Default fid_uni = spatial_mean for compatibility
+                        stain_results['image_quality']['fid_uni'] = \
+                            stain_results['image_quality']['fid_uni_spatial_mean']
+                    else:
+                        stain_results['image_quality']['fid_uni'] = \
+                            compute_uni_fid(gen, real, pooling=args.uni_fid_pooling)
                 except Exception as e:
                     print(f"    UNI-FID skipped: {e}")
         else:
