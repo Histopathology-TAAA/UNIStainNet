@@ -153,6 +153,9 @@ def main():
     parser.add_argument('--guidance_scale', type=float, default=1.0)
     parser.add_argument('--batch_size', type=int, default=8)
     parser.add_argument('--skip_uni_fid', action='store_true')
+    parser.add_argument('--uni_fid_pooling', type=str, default='spatial_mean',
+                        choices=['spatial_mean', 'cls', 'spatial_quad', 'all'],
+                        help='UNI-FID pooling: spatial_mean (robust, default), cls (legacy), spatial_quad (4-region), all (compute all three).')
     parser.add_argument('--composite_bg', action='store_true')
     parser.add_argument('--random_seed', action='store_true', help='Use a random seed instead of fixed seed 42')
     parser.add_argument('--dab_threshold', type=float, default=0.15,
@@ -297,9 +300,18 @@ def main():
 
         # UNI-FID (per-stain)
         if not args.skip_uni_fid:
-            print(f"  Computing UNI-FID...")
+            print(f"  Computing UNI-FID (pooling={args.uni_fid_pooling})...")
             try:
-                stain_results['image_quality']['fid_uni'] = compute_uni_fid(gen, real)
+                if args.uni_fid_pooling == 'all':
+                    for method in ['spatial_mean', 'cls', 'spatial_quad']:
+                        fid_val = compute_uni_fid(gen, real, pooling=method)
+                        stain_results['image_quality'][f'fid_uni_{method}'] = fid_val
+                        print(f"    UNI-FID ({method}): {fid_val:.1f}")
+                    stain_results['image_quality']['fid_uni'] = \
+                        stain_results['image_quality']['fid_uni_spatial_mean']
+                else:
+                    stain_results['image_quality']['fid_uni'] = \
+                        compute_uni_fid(gen, real, pooling=args.uni_fid_pooling)
             except Exception as e:
                 print(f"    UNI-FID skipped: {e}")
 
