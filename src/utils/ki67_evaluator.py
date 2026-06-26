@@ -321,10 +321,13 @@ def compute_ki67_summary(real_li_scores, fake_li_scores):
             import pandas as pd
             import pingouin as pg
 
-            df = pd.DataFrame({'Real': real, 'Fake': fake})
+            df = pd.DataFrame({
+                'Subject': np.tile(np.arange(n), 2),
+                'Rater': ['Real'] * n + ['Fake'] * n,
+                'LI': np.concatenate([real, fake]),
+            })
             icc_result = pg.intraclass_corr(
-                data=df.melt(var_name='Source', value_name='LI'),
-                targets='variable', raters='Source', ratings='LI',
+                data=df, targets='Subject', raters='Rater', ratings='LI',
             )
             icc_row = icc_result[icc_result['Type'] == 'ICC2']
             if len(icc_row) > 0:
