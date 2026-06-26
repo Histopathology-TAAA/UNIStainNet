@@ -27,6 +27,7 @@ from torchmetrics.image.fid import FrechetInceptionDistance
 
 from src.models.pals import MLPA_LOSS
 from src.models.pcls import UNet_pro, CTPC_LOSS
+from src.models.gauss_pyramid import Gauss_Pyramid_Conv
 from src.models.discriminator import (
     PatchDiscriminator, MultiScaleDiscriminator,
     hinge_loss_d, hinge_loss_g, r1_gradient_penalty, feature_matching_loss,
@@ -115,6 +116,7 @@ class UNIStainNetTrainer(pl.LightningModule):
         gram_style_weight=0.0,
         mlpa_weight=0.0,
         ctpc_weight=0.0,
+        gp_weight=0.0,
         edge_weight=0.0,
         he_edge_weight=0.0,
         bg_white_weight=0.0,
@@ -280,6 +282,13 @@ class UNIStainNetTrainer(pl.LightningModule):
         else:
             self.net_seg = None
             self.criterion_ctpc = None
+
+        # Gaussian Pyramid loss (multi-scale L1, replaces l1_lowres)
+        if gp_weight > 0:
+            self.gauss_pyramid = Gauss_Pyramid_Conv(num_high=5)
+            self.gp_weights = [0.015625, 0.03125, 0.0625, 0.125, 0.25, 1.0]
+        else:
+            self.gauss_pyramid = None
 
         # VGG feature extractor for Gram-matrix style loss
         if gram_style_weight > 0:
@@ -932,9 +941,19 @@ class UNIStainNetTrainer(pl.LightningModule):
             self.log('train/lpips_fullres', loss_lpips_512, prog_bar=False)
 
         # Low-resolution L1 (color fidelity)
-        # Case A: full-resolution (IHC H-channel structure guidance allows pixel pressure)
-        # Case B: 64px (misalignment-robust)
-        if self.hparams.l1_lowres_weight > 0:
+        # ---- L1 / Gaussian Pyramid loss ----
+        # Gaussian Pyramid replaces single-scale L1 with 6-scale multi-resolution.
+        if self.hparams.gp_weight > 0 and self.gauss_pyramid is not None:
+            p_fake = self.gauss_pyramid(generated)
+            p_real = self.gauss_pyramid(her2)
+            loss_gp = sum(
+                w * F.l1_loss(pf, pr)
+                for w, pf, pr in zip(self.gp_weights, p_fake, p_real)
+            )
+            loss_g = loss_g + self.hparams.gp_weight * loss_gp
+            self.log('train/gp_loss', loss_gp, prog_bar=False)
+        elif self.hparams.l1_lowres_weight > 0:
+            # Legacy L1 — kept for backward compat
             if use_case_a:
                 loss_l1_lowres = F.l1_loss(generated, her2)
             else:

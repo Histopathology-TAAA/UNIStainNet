@@ -88,7 +88,7 @@ def main():
         # Architecture (identical to BCI except no class conditioning)
         num_classes=5,          # 4 stains + null
         null_class=4,
-        class_dim=256,
+        class_dim=64,
         uni_dim=1024,
         ndf=64,
         input_skip=True,
@@ -105,15 +105,16 @@ def main():
         lpips_256_weight=0.5,
         lpips_512_weight=0.25,
         he_edge_weight=2.0,
-        l1_lowres_weight=0.5,
+        l1_lowres_weight=0.0,       # replaced by Gaussian Pyramid
+        gp_weight=1.0,              # 6-scale multi-resolution L1
         adversarial_weight=0.0,
         uncond_disc_weight=1.0,
         dab_intensity_weight=0.0,    # replaced by MLPA
-        dab_contrast_weight=0.0,    # No class ordering across stains
+        dab_contrast_weight=0.0,
         dab_sharpness_weight=0.0,
-        gram_style_weight=0.5,       # Case A only — texture/FID
+        gram_style_weight=0.0,       # not helping — skip
         mlpa_weight=0.5,             # protein expression (PGVMS)
-        ctpc_weight=0.0,             # UNet features don't transfer to generated IHC
+        ctpc_weight=0.0,
         edge_weight=0.0,
         crop_disc_weight=0.0,
         feat_match_weight=10.0,
