@@ -936,7 +936,7 @@ ki67_tier_kappa         0.599    0.599
 Results saved to eval_output/ki67_deepliif_run7/results.json
 
 PYTHONPATH=. python scripts/train/train_mist.py       --data_dir /home/ahmed_ayman/data/Destained_MIST       --ckpt_dir "./checkpoints/ki67_deepliif_run8"       --stains Ki67       --deepliif_weights_path deepliif-weights/DeepLIIF_Latest_Model/latest_net_G1.pth       --case_a_prob 1.0       --case_a_warmup_epochs 60       --case_a_anneal_epochs 40       --case_a_end_prob 0.05       --use_alignment       --batch_size 8       --wandb_name "ki67_deepliif_run8"       --max_epochs 150       --he_rgb_dropout 0.1
-PYTHONPATH=. python scripts/eval/eval_mist.py   --checkpoint "./checkpoints/ki67_deepliif_run8/last.ckpt"   --data_dir "/home/ahmed_ayman/data/Destained_MIST"   --stains Ki67   --output_dir "./eval_output/ki67_deepliif_run8"   --enable_stn_alignment   --ki67_eval_method deepliif   --seg_thresh 130   --marker_thresh default   --min_nuclei 100
+PYTHONPATH=. python scripts/eval/eval_mist.py   --checkpoint "./checkpoints/ki67_deepliif_run8/last.ckpt"   --data_dir "/home/ahmed_ayman/data/Destained_MIST"   --stains Ki67   --output_dir "./eval_output/ki67_deepliif_run8"   --enable_stn_alignment   --ki67_eval_method deepliif   --seg_thresh 80   --marker_thresh 80   --min_nuclei 80  --uni_fid_pooling all
 
 
 
@@ -989,4 +989,46 @@ PYTHONPATH=. python scripts/eval/eval_mist.py \
       --ki67_eval_method deepliif \
       --seg_thresh 80 \
       --marker_thresh 80 \
-      --min_nuclei 80
+      --min_nuclei 80 \
+      --uni_fid_pooling all
+
+
+PYTHONPATH=. python scripts/train/train_mist.py \
+    --data_dir /home/ahmed_ayman/data/Destained_MIST \
+    --ckpt_dir "./checkpoints/ki67_pv3" \
+    --stains Ki67 \
+    --deepliif_weights_path deepliif-weights/DeepLIIF_Latest_Model/latest_net_G1.pth \
+    --case_a_prob 1.0 \
+    --case_a_warmup_epochs 60 \
+    --case_a_anneal_epochs 40 \
+    --case_a_end_prob 0.05 \
+    --use_alignment \
+    --batch_size 8 \
+    --wandb_name "ki67_pv3" \
+    --max_epochs 150 \
+    --he_rgb_dropout 0.1
+PYTHONPATH=. python scripts/eval/eval_mist.py \
+    --checkpoint "./checkpoints/ki67_pv3/last.ckpt" \
+    --data_dir "/home/ahmed_ayman/data/Destained_MIST" \
+    --stains Ki67 \
+    --output_dir "./eval_output/ki67_pv3" \
+    --ki67_eval_method deepliif \
+    --seg_thresh 80 \
+    --marker_thresh 80 \
+    --min_nuclei 80 \
+    --uni_fid_pooling all
+
+PYTHONPATH=. python scripts/train/train_mist.py \
+    --data_dir /home/ahmed_ayman/data/Destained_MIST \
+    --ckpt_dir "./checkpoints/ki67_pv4" \
+    --stains Ki67 \
+    --deepliif_weights_path deepliif-weights/DeepLIIF_Latest_Model/latest_net_G1.pth \
+    --case_a_prob 1.0 \
+    --case_a_warmup_epochs 60 \
+    --case_a_anneal_epochs 40 \
+    --case_a_end_prob 0.05 \
+    --use_alignment \
+    --batch_size 8 \
+    --wandb_name "ki67_pv4" \
+    --max_epochs 150 \
+    --he_rgb_dropout 0.1
