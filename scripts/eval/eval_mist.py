@@ -197,6 +197,10 @@ def main():
                         help="DeepLIIF marker intensity threshold (int or 'default').")
     parser.add_argument('--min_nuclei', type=int, default=100,
                         help="Minimum number of real nuclei required to include a patch in the Ki67 clinical metrics. Default is 100.")
+    parser.add_argument('--hotspot_patches_per_image', type=int, default=0,
+                        help='If > 1, groups LI scores into per-WSI hotspots (e.g. 4 for 2x2 patches per WSI).')
+    parser.add_argument('--ki67_eval_second_method', type=str, choices=['none', 'stardist'], default='none',
+                        help='Optional second evaluator for dual-method consensus reporting.')
     parser.add_argument('--save_images', action='store_true',
                         help='Save generated/real/HE tensors as .pt files for reuse.')
     parser.add_argument('--load_images_from', type=str, default=None,
@@ -455,6 +459,18 @@ def main():
             # Compute global summary
             ki67_summary = compute_ki67_summary(real_li_scores, fake_li_scores)
             print_ki67_summary(ki67_summary, method=args.ki67_eval_method)
+
+            # Hotspot analysis (if patches can be grouped by WSI — requires
+            # --hotspot_patches_per_image to be set on the CLI)
+            if args.hotspot_patches_per_image > 1:
+                from src.utils.ki67_evaluator import compute_hotspot_analysis
+                hotspot_results = compute_hotspot_analysis(
+                    real_li_scores, fake_li_scores,
+                    n_patches_per_image=args.hotspot_patches_per_image,
+                )
+                if hotspot_results:
+                    ki67_summary.update(hotspot_results)
+
             stain_results['ki67_clinical'] = ki67_summary
 
         results['per_stain'][stain] = stain_results

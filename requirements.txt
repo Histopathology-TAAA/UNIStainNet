@@ -20,3 +20,7 @@ stardist
 csbdeep
 tensorflow
 opencv-python-headless
+
+# Ki67 clinical evaluation (ICC, hotspot, dual-evaluator)
+pingouin
+pandas

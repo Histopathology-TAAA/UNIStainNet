@@ -313,7 +313,59 @@ def compute_ki67_summary(real_li_scores, fake_li_scores):
     else:
         results['ki67_tier_kappa'] = float('nan')
 
-    # ── 4. Distributional summaries ───────────────────────────────────
+    # ── 4. ICC — Intraclass Correlation Coefficient ────────────────────
+    # ICC(2,1): two-way random, single rater — measures absolute agreement.
+    # Widely used in 2024-2025 Ki67 DIA papers as the primary metric.
+    if n >= 3:
+        try:
+            import pandas as pd
+            import pingouin as pg
+
+            df = pd.DataFrame({'Real': real, 'Fake': fake})
+            icc_result = pg.intraclass_corr(
+                data=df.melt(var_name='Source', value_name='LI'),
+                targets='variable', raters='Source', ratings='LI',
+            )
+            icc_row = icc_result[icc_result['Type'] == 'ICC2']
+            if len(icc_row) > 0:
+                results['ki67_icc'] = float(icc_row['ICC'].values[0])
+                results['ki67_icc_ci95_low'] = float(icc_row['CI95%'][0][0] if icc_row['CI95%'].values[0] is not None else np.nan)
+                results['ki67_icc_ci95_high'] = float(icc_row['CI95%'][0][1] if icc_row['CI95%'].values[0] is not None else np.nan)
+            else:
+                results['ki67_icc'] = float('nan')
+        except ImportError:
+            results['ki67_icc'] = float('nan')
+
+    # ── 5. Multi-tier concordance (3-tier + 4-tier) ──────────────────
+    def _to_tier_3(li):
+        if li < 10.0:   return 0
+        elif li <= 20.0: return 1
+        else:            return 2
+
+    def _to_tier_4(li):
+        if li < 6.0:     return 0
+        elif li <= 20.0: return 1
+        elif li <= 50.0: return 2
+        else:            return 3
+
+    for name, fn in [('3tier', _to_tier_3), ('4tier', _to_tier_4)]:
+        rt = np.array([fn(x) for x in real])
+        ft = np.array([fn(x) for x in fake])
+        results[f'ki67_{name}_concordance'] = float(np.mean(rt == ft))
+        if len(np.unique(rt)) >= 2 or len(np.unique(ft)) >= 2:
+            try:
+                from sklearn.metrics import cohen_kappa_score
+                results[f'ki67_{name}_kappa'] = float(cohen_kappa_score(rt, ft, weights='linear'))
+            except Exception:
+                results[f'ki67_{name}_kappa'] = float('nan')
+        else:
+            results[f'ki67_{name}_kappa'] = float('nan')
+
+    # Backward compatibility aliases
+    results['ki67_tier_concordance'] = results['ki67_3tier_concordance']
+    results['ki67_tier_kappa'] = results['ki67_3tier_kappa']
+
+    # ── 6. Distributional summaries ───────────────────────────────────
     results['ki67_real_li_mean'] = float(np.mean(real))
     results['ki67_real_li_std'] = float(np.std(real))
     results['ki67_fake_li_mean'] = float(np.mean(fake))
@@ -323,10 +375,64 @@ def compute_ki67_summary(real_li_scores, fake_li_scores):
     return results
 
 
+def compute_hotspot_analysis(real_li_scores, fake_li_scores, n_patches_per_image=4):
+    """Per-image hotspot concordance analysis.
+
+    For each image, the LI was computed per 512×512 patch. If multiple patches
+    belong to the same WSI, identify the hotspot (highest-LI patch) per image
+    and compare hotspot metrics.
+
+    Args:
+        real_li_scores: [N] real LI percentages (per-patch)
+        fake_li_scores: [N] fake LI percentages (per-patch)
+        n_patches_per_image: number of patches per WSI (default 4 = 2×2 grid)
+
+    Returns:
+        dict with hotspot metrics, or empty dict if grouping not applicable
+    """
+    real = np.asarray(real_li_scores, dtype=np.float64)
+    fake = np.asarray(fake_li_scores, dtype=np.float64)
+    n = len(real)
+
+    if n % n_patches_per_image != 0 or n_patches_per_image <= 1:
+        return {}  # can't group into per-image hotspots
+
+    n_images = n // n_patches_per_image
+    real_2d = real.reshape(n_images, n_patches_per_image)
+    fake_2d = fake.reshape(n_images, n_patches_per_image)
+
+    # Hotspot = patch with highest LI per image
+    real_hotspots = real_2d.max(axis=1)
+    fake_hotspots = fake_2d.max(axis=1)
+
+    # Hotspot location: which patch index has the max?
+    real_hotspot_idx = real_2d.argmax(axis=1)
+    fake_hotspot_idx = fake_2d.argmax(axis=1)
+    location_match = float(np.mean(real_hotspot_idx == fake_hotspot_idx))
+
+    # Heterogeneity: hotspot / mean ratio
+    real_hetero = real_hotspots / (real_2d.mean(axis=1) + 1e-6)
+    fake_hetero = fake_hotspots / (fake_2d.mean(axis=1) + 1e-6)
+
+    # Hotspot metrics
+    from scipy.stats import pearsonr
+    r_hs, p_hs = pearsonr(real_hotspots, fake_hotspots)
+    mae_hs = float(np.mean(np.abs(real_hotspots - fake_hotspots)))
+
+    results = {
+        'ki67_hotspot_pearson_r': float(r_hs),
+        'ki67_hotspot_mae': mae_hs,
+        'ki67_hotspot_location_match': location_match,
+        'ki67_hotspot_real_mean': float(np.mean(real_hotspots)),
+        'ki67_hotspot_fake_mean': float(np.mean(fake_hotspots)),
+        'ki67_heterogeneity_mae': float(np.mean(np.abs(real_hetero - fake_hetero))),
+        'ki67_n_images_hotspot': int(n_images),
+    }
+    return results
+
+
 def print_ki67_summary(summary: dict, method: str = 'stardist'):
     """Pretty-print Ki67 clinical metrics to the terminal."""
-    tier_labels = {0: 'Low (<10%)', 1: 'Intermediate (10-20%)', 2: 'High (>20%)'}
-    
     title = "DeepLIIF Gold Standard" if method == 'deepliif' else "StarDist Silver Standard"
 
     print("\n" + "=" * 60)
@@ -338,6 +444,13 @@ def print_ki67_summary(summary: dict, method: str = 'stardist'):
     print("-" * 60)
     print(f"  MAE (LI %)            : {summary['ki67_li_mae']:.2f} ± {summary['ki67_li_mae_std']:.2f}")
     print(f"  Pearson r             : {summary['ki67_li_pearson_r']:.4f}  (p={summary['ki67_li_pearson_p']:.2e})")
-    print(f"  Tier Concordance      : {summary['ki67_tier_concordance'] * 100:.1f}%")
-    print(f"  Weighted Kappa        : {summary['ki67_tier_kappa']:.4f}")
+    if 'ki67_icc' in summary and not np.isnan(summary['ki67_icc']):
+        print(f"  ICC(2,1)              : {summary['ki67_icc']:.4f}  (95% CI: {summary.get('ki67_icc_ci95_low', np.nan):.4f}–{summary.get('ki67_icc_ci95_high', np.nan):.4f})")
+    print(f"  Tier Concordance (3)  : {summary['ki67_3tier_concordance'] * 100:.1f}%")
+    print(f"  Weighted Kappa (3)    : {summary.get('ki67_3tier_kappa', summary.get('ki67_tier_kappa', float('nan'))):.4f}")
+    # Hotspot if available
+    if 'ki67_hotspot_pearson_r' in summary and not np.isnan(summary['ki67_hotspot_pearson_r']):
+        print(f"  Hotspot Pearson-r     : {summary['ki67_hotspot_pearson_r']:.4f}")
+        print(f"  Hotspot Location Match: {summary['ki67_hotspot_location_match'] * 100:.1f}%")
+        print(f"  Hotspot MAE (LI %)    : {summary['ki67_hotspot_mae']:.2f}")
     print("=" * 60 + "\n")
