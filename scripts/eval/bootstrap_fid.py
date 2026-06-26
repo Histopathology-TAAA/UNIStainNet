@@ -57,50 +57,47 @@ def compute_fid_from_features(feats_gen, feats_real):
 def extract_inception_features(images, batch_size=16):
     """Extract InceptionV3 pool3 features from a tensor of images.
 
+    Uses the same Inception pipeline as torchmetrics FID:
+    - InceptionV3 pretrained on ImageNet
+    - Input: [0, 1] images
+    - Output: 2048-dim pool3 features
+
     Args:
         images: [N, 3, H, W] in [-1, 1]
-        batch_size: batch size for FID computation
+        batch_size: batch size
 
     Returns:
         numpy array of shape [N, 2048]
     """
-    fid = FrechetInceptionDistance(feature=2048, normalize=True)
-    # Use FID's internal feature extraction by feeding images one at a time
-    # through update(), then extracting the cached features.
+    from torchvision.models import inception_v3, Inception_V3_Weights
+    inception = inception_v3(
+        weights=Inception_V3_Weights.DEFAULT,
+        transform_input=False,  # we'll normalise manually to match torchmetrics
+    )
+    inception.fc = torch.nn.Identity()
+    inception = inception.cuda().eval()
 
-    # Torchmetrics FID caches features internally. We feed real and fake
-    # through separate FID instances to get separate feature sets.
-    fid_real = FrechetInceptionDistance(feature=2048, normalize=True)
-    fid_fake = FrechetInceptionDistance(feature=2048, normalize=True)
+    # torchmetrics FID with normalize=True uses ImageNet stats
+    mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1).cuda()
+    std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1).cuda()
 
     dataset = TensorDataset(images)
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
 
-    for (batch,) in loader:
-        batch_01 = ((batch.float() + 1) / 2).clamp(0, 1)
-        fid_fake.update(batch_01, real=False)
-
-    # Torchmetrics doesn't expose raw features easily after update().
-    # We'll do it manually by feeding through the internal Inception model.
-    fid_fake._get_covariance_matrix  # no, this is private
-
-    # Alternative approach: extract manually with the same Inception
-    from torchvision.models import inception_v3, Inception_V3_Weights
-    inception = inception_v3(weights=Inception_V3_Weights.DEFAULT, transform_input=True)
-    inception.fc = torch.nn.Identity()  # remove classifier
-    inception.eval()
-
     feats = []
     for (batch,) in loader:
         batch_01 = ((batch.float() + 1) / 2).clamp(0, 1)
-        # Inception expects 299×299
-        batch_resized = torch.nn.functional.interpolate(
+        # torchmetrics resizes to 299 internally
+        batch_299 = torch.nn.functional.interpolate(
             batch_01, size=(299, 299), mode='bilinear', align_corners=False,
         )
+        batch_norm = (batch_299.cuda() - mean) / std
         with torch.no_grad():
-            out = inception(batch_resized)
+            out = inception(batch_norm)
         feats.append(out.cpu().numpy())
 
+    del inception
+    torch.cuda.empty_cache()
     return np.concatenate(feats, axis=0)
 
 
