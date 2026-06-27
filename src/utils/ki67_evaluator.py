@@ -454,8 +454,12 @@ def print_ki67_summary(summary: dict, method: str = 'stardist'):
     print(f"  Pearson r             : {summary['ki67_li_pearson_r']:.4f}  (p={summary['ki67_li_pearson_p']:.2e})")
     if 'ki67_icc' in summary and not np.isnan(summary['ki67_icc']):
         print(f"  ICC(2,1)              : {summary['ki67_icc']:.4f}  (95% CI: {summary.get('ki67_icc_ci95_low', np.nan):.4f}–{summary.get('ki67_icc_ci95_high', np.nan):.4f})")
-    print(f"  Tier Concordance (3)  : {summary['ki67_3tier_concordance'] * 100:.1f}%")
-    print(f"  Weighted Kappa (3)    : {summary.get('ki67_3tier_kappa', summary.get('ki67_tier_kappa', float('nan'))):.4f}")
+    if 'ki67_3tier_concordance' in summary:
+        print(f"  Tier Concordance (3)  : {summary['ki67_3tier_concordance'] * 100:.1f}%")
+        print(f"  Weighted Kappa (3)    : {summary.get('ki67_3tier_kappa', summary.get('ki67_tier_kappa', float('nan'))):.4f}")
+    if 'ki67_4tier_concordance' in summary and not np.isnan(summary.get('ki67_4tier_concordance', float('nan'))):
+        print(f"  Tier Concordance (4)  : {summary['ki67_4tier_concordance'] * 100:.1f}%")
+        print(f"  Weighted Kappa (4)    : {summary.get('ki67_4tier_kappa', float('nan')):.4f}")
     # Hotspot if available
     if 'ki67_hotspot_pearson_r' in summary and not np.isnan(summary['ki67_hotspot_pearson_r']):
         print(f"  Hotspot Pearson-r     : {summary['ki67_hotspot_pearson_r']:.4f}")
