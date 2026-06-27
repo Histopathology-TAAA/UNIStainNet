@@ -118,7 +118,7 @@ def main():
         edge_weight=0.0,
         crop_disc_weight=0.0,
         feat_match_weight=10.0,
-        patchnce_weight=0.0,
+        patchnce_weight=0.1,             # feature-space contrastive (Run 10)
         bg_white_weight=0.0,
         uni_perceptual_weight=args.uni_perceptual_weight,
         # GAN training
