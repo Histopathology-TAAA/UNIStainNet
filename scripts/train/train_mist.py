@@ -105,7 +105,7 @@ def main():
         lpips_256_weight=0.5,
         lpips_512_weight=0.25,
         he_edge_weight=2.0,
-        l1_lowres_weight=0.0,       # replaced by Gaussian Pyramid
+        l1_lowres_weight=0.05,      # whisper of color anchoring
         gp_weight=1.0,              # 6-scale multi-resolution L1
         adversarial_weight=0.0,
         uncond_disc_weight=1.0,
@@ -150,6 +150,7 @@ def main():
         # DeepLIIF virtual Hematoxylin staining
         deepliif_weights_path=args.deepliif_weights_path,
         hema_channels=args.hema_channels,
+        use_se_attention=False,  # Run 11: off, Run 12: True
     )
 
     if args.deepliif_weights_path:

@@ -107,3 +107,59 @@ class SelfAttention(nn.Module):
         attn = attn.softmax(dim=-1)
         out = (v @ attn.transpose(-1, -2)).reshape(B, C, H, W)
         return x + self.proj(out)
+
+
+# ======================================================================
+# Architectural Improvements (Run 11)
+# ======================================================================
+
+class SEBlock(nn.Module):
+    """Squeeze-and-Excitation — learned per-channel importance gating.
+
+    Global average pool → bottleneck FC → sigmoid → reweight channels.
+    Adds ~2% params per insertion, near-zero compute overhead.
+    """
+
+    def __init__(self, channels, reduction=16):
+        super().__init__()
+        self.gate = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(channels, channels // reduction, 1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(channels // reduction, channels, 1),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x):
+        return x * self.gate(x)
+
+
+class CoordAttn(nn.Module):
+    """Coordinate Attention — lightweight positional encoding via factorised attention.
+
+    Decomposes spatial attention into horizontal + vertical strips.
+    Far cheaper than full self-attention (O(H+W) vs O(H×W)).
+    """
+
+    def __init__(self, channels, reduction=32):
+        super().__init__()
+        hidden = max(8, channels // reduction)
+        self.pool_h = nn.AdaptiveAvgPool2d((None, 1))
+        self.pool_w = nn.AdaptiveAvgPool2d((1, None))
+        self.conv1 = nn.Conv2d(channels, hidden, 1)
+        self.bn = nn.BatchNorm2d(hidden)
+        self.act = nn.ReLU(inplace=True)
+        self.conv_h = nn.Conv2d(hidden, channels, 1)
+        self.conv_w = nn.Conv2d(hidden, channels, 1)
+
+    def forward(self, x):
+        B, C, H, W = x.shape
+        # Factorised pooling
+        h_feat = self.pool_h(x)  # [B, C, H, 1]
+        w_feat = self.pool_w(x)  # [B, C, 1, W]
+        # Shared transform
+        cat = torch.cat([h_feat, w_feat.expand(-1, -1, H, -1)], dim=3)
+        shared = self.act(self.bn(self.conv1(cat)))
+        h_out = self.conv_h(shared[:, :, :, :1])  # [B, C, H, 1]
+        w_out = self.conv_w(shared[:, :, :, 1:1+W])  # [B, C, 1, W]
+        return x * h_out.sigmoid() * w_out.sigmoid()
