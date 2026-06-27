@@ -286,7 +286,7 @@ class UNIStainNetTrainer(pl.LightningModule):
         # Gaussian Pyramid loss (multi-scale L1, replaces l1_lowres)
         if gp_weight > 0:
             self.gauss_pyramid = Gauss_Pyramid_Conv(num_high=5)
-            self.gp_weights = [0.015625, 0.03125, 0.0625, 0.125, 0.25, 1.0]
+            self.gp_weights = [0.1, 0.15, 0.25, 0.5, 0.75, 0.5]  # misalignment-aware
         else:
             self.gauss_pyramid = None
 

@@ -332,11 +332,16 @@ def compute_ki67_summary(real_li_scores, fake_li_scores):
             icc_row = icc_result[icc_result['Type'] == 'ICC2']
             if len(icc_row) > 0:
                 results['ki67_icc'] = float(icc_row['ICC'].values[0])
-                results['ki67_icc_ci95_low'] = float(icc_row['CI95%'][0][0] if icc_row['CI95%'].values[0] is not None else np.nan)
-                results['ki67_icc_ci95_high'] = float(icc_row['CI95%'][0][1] if icc_row['CI95%'].values[0] is not None else np.nan)
+                try:
+                    ci = icc_row['CI95%'].values[0]
+                    if ci is not None and len(ci) == 2:
+                        results['ki67_icc_ci95_low'] = float(ci[0])
+                        results['ki67_icc_ci95_high'] = float(ci[1])
+                except Exception:
+                    pass
             else:
                 results['ki67_icc'] = float('nan')
-        except ImportError:
+        except Exception:
             results['ki67_icc'] = float('nan')
 
     # ── 5. Multi-tier concordance (3-tier + 4-tier) ──────────────────
