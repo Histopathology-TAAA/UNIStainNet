@@ -1032,3 +1032,168 @@ PYTHONPATH=. python scripts/train/train_mist.py \
     --wandb_name "ki67_pv4" \
     --max_epochs 150 \
     --he_rgb_dropout 0.1
+PYTHONPATH=. python scripts/eval/eval_mist.py \
+    --checkpoint "./checkpoints/ki67_pv4/last.ckpt" \
+    --data_dir "/home/ahmed_ayman/data/Destained_MIST" \
+    --stains Ki67 \
+    --output_dir "./eval_output/ki67_pv4" \
+    --ki67_eval_method deepliif \
+    --seg_thresh 80 \
+    --marker_thresh 80 \
+    --min_nuclei 80 \
+    --uni_fid_pooling all
+
+
+  Run 9 — Launch Now
+
+  PYTHONPATH=. python scripts/train/train_mist.py \
+      --data_dir /home/ahmed_ayman/data/Destained_MIST \
+      --ckpt_dir "./checkpoints/ki67_run9" --stains Ki67 \
+      --deepliif_weights_path deepliif-weights/DeepLIIF_Latest_Model/latest_net_G1.pth \
+      --case_a_prob 1.0 --case_a_warmup_epochs 60 --case_a_anneal_epochs 40 --case_a_end_prob 0.05 \
+      --use_alignment --batch_size 8 --wandb_name "ki67_run9" --max_epochs 150 --he_rgb_dropout 0.1 \
+      --resume_from "./checkpoints/ki67_run9/last.ckpt"
+  PYTHONPATH=. python scripts/eval/eval_mist.py \
+      --checkpoint "./checkpoints/ki67_run9/last.ckpt" \
+      --data_dir "/home/ahmed_ayman/data/Destained_MIST" \
+      --stains Ki67 \
+      --output_dir "./eval_output/ki67_run9" \
+      --enable_stn_alignment \
+      --ki67_eval_method deepliif \
+      --seg_thresh 80 \
+      --marker_thresh 80 \
+      --min_nuclei 80 \
+      --uni_fid_pooling all
+  
+  
+  Config: Run 8 + MLPA(0.5) + GP(1.0) − L1_lowres − DAB_intensity. class_dim=64, gram=0, patchnce=0.
+
+  Run 10 — Launch After Run 9
+
+  PYTHONPATH=. python scripts/train/train_mist.py \
+      --data_dir /home/ahmed_ayman/data/Destained_MIST \
+      --ckpt_dir "./checkpoints/ki67_run10" --stains Ki67 \
+      --deepliif_weights_path deepliif-weights/DeepLIIF_Latest_Model/latest_net_G1.pth \
+      --case_a_prob 1.0 --case_a_warmup_epochs 60 --case_a_anneal_epochs 40 --case_a_end_prob 0.05 \
+      --use_alignment --batch_size 8 --wandb_name "ki67_run10" --max_epochs 150 --he_rgb_dropout 0.1 \
+      --resume_from "./checkpoints/ki67_run10/last.ckpt"
+  PYTHONPATH=. python scripts/eval/eval_mist.py \
+      --checkpoint "./checkpoints/ki67_run10/last.ckpt" \
+      --data_dir "/home/ahmed_ayman/data/Destained_MIST" \
+      --stains Ki67 \
+      --output_dir "./eval_output/ki67_run10" \
+      --enable_stn_alignment \
+      --ki67_eval_method deepliif \
+      --seg_thresh 80 \
+      --marker_thresh 80 \
+      --min_nuclei 80 \
+      --uni_fid_pooling all
+
+  Config: Same as Run 9 + patchnce_weight=0.1. Already set in the code. Same command as Run 9 but different --ckpt_dir and --wandb_name.
+
+● # Run 9
+  PYTHONPATH=. python scripts/eval/eval_mist.py \
+      --checkpoint "./checkpoints/ki67_run9/last.ckpt" \
+      --data_dir "/home/ahmed_ayman/data/Destained_MIST" --stains Ki67 \
+      --output_dir "./eval_output/ki67_run9" \
+      --ki67_eval_method deepliif \
+      --seg_thresh 80 --marker_thresh 80 --min_nuclei 80
+
+  # Run 10
+  PYTHONPATH=. python scripts/eval/eval_mist.py \
+      --checkpoint "./checkpoints/ki67_run10/last.ckpt" \
+      --data_dir "/home/ahmed_ayman/data/Destained_MIST" --stains Ki67 \
+      --output_dir "./eval_output/ki67_run10" \
+      --ki67_eval_method deepliif \
+      --seg_thresh 80 --marker_thresh 80 --min_nuclei 80
+
+###########################################################################################################
+
+Run 11 = Run 10 Config + Two Fixes
+
+  Both fixes are already in the code (I made them after Run 10 launched):
+
+  1. Misalignment-aware pyramid weights: 512 weight 1.0→0.5, 256 weight 0.25→0.75. Less penalty for correctly-placed but shifted nuclei.
+  2. Tiny L1 anchor: l1_lowres_weight=0.05. A whisper of color guidance — "stay roughly this brown" — without the hallucination pressure of the old 0.5 weight.
+
+  Launch with the same command as Run 10 but different --ckpt_dir and --wandb_name:
+
+  PYTHONPATH=. python scripts/train/train_mist.py \
+      --data_dir /home/ahmed_ayman/data/Destained_MIST \
+      --deepliif_weights_path deepliif-weights/DeepLIIF_Latest_Model/latest_net_G1.pth \
+      --case_a_prob 1.0 --case_a_warmup_epochs 60 --case_a_anneal_epochs 40 --case_a_end_prob 0.05 \
+      --use_alignment --batch_size 8 --wandb_name "ki67_run11" --max_epochs 150 --he_rgb_dropout 0.1 \
+      --ckpt_dir "./checkpoints/ki67_run11" --stains Ki67         
+
+#############################################################################################################
+● Done. Run 11 now has:
+
+  ┌──────────────┬───────────────┬───────────────────────────────────────────────┐
+  │    Change    │     Lines     │                     What                      │
+  ├──────────────┼───────────────┼───────────────────────────────────────────────┤
+  │ SE-Net ×5    │ ~80           │ Channel attention after each decoder block    │
+  ├──────────────┼───────────────┼───────────────────────────────────────────────┤
+  │ CoordAttn ×1 │ ~40           │ Factorised spatial attention at bottleneck    │
+  ├──────────────┼───────────────┼───────────────────────────────────────────────┤
+  │ GP weights   │ fixed earlier │ 256×256 peak (0.75), 512×512 reduced (0.5)    │
+  ├──────────────┼───────────────┼───────────────────────────────────────────────┤
+  │ L1 anchor    │ 1 line        │ l1_lowres_weight=0.05 — whisper of color      │
+  ├──────────────┼───────────────┼───────────────────────────────────────────────┤
+  │ PatchNCE     │ 1 line        │ patchnce_weight=0.1 — feature-space structure │
+  └──────────────┴───────────────┴───────────────────────────────────────────────┘
+
+  Total params added: ~50K (<0.2% increase). No new hyperparameters.
+
+  PYTHONPATH=. python scripts/train/train_mist.py \
+      --data_dir /home/ahmed_ayman/data/Destained_MIST \
+      --ckpt_dir "./checkpoints/ki67_run11" --stains Ki67 \
+      --deepliif_weights_path deepliif-weights/DeepLIIF_Latest_Model/latest_net_G1.pth \
+      --case_a_prob 1.0 --case_a_warmup_epochs 60 --case_a_anneal_epochs 40 --case_a_end_prob 0.05 \
+      --use_alignment --batch_size 8 --wandb_name "ki67_run11" --max_epochs 150 --he_rgb_dropout 0.1 \
+      --resume_from "./checkpoints/ki67_run11/last.ckpt"
+
+  PYTHONPATH=. python scripts/eval/eval_mist.py \
+      --checkpoint "./checkpoints/ki67_run11/last.ckpt" \
+      --data_dir "/home/ahmed_ayman/data/Destained_MIST" \
+      --stains Ki67 \
+      --output_dir "./eval_output/ki67_run11" \
+      --enable_stn_alignment \
+      --ki67_eval_method deepliif \
+      --seg_thresh 80 \
+      --marker_thresh 80 \
+      --min_nuclei 80 
+################################################################################################################
+  Run 11 — Weights Only
+
+  # Same as Run 10 + two fixes:
+  gp_weights = [0.1, 0.15, 0.25, 0.5, 0.75, 0.5]  # misalignment-aware
+  l1_lowres_weight = 0.05                            # tiny color anchor
+  patchnce_weight = 0.1                              # feature-space structure
+  use_se_attention = False                           # no architecture changes
+
+
+  Run 12 — Architecture
+
+  Change one line in train_mist.py:
+  use_se_attention=True,   # Run 12: on
+
+  PYTHONPATH=. python scripts/train/train_mist.py \
+      --data_dir /home/ahmed_ayman/data/Destained_MIST \
+      --ckpt_dir "./checkpoints/ki67_run12" --stains Ki67 \
+      --deepliif_weights_path deepliif-weights/DeepLIIF_Latest_Model/latest_net_G1.pth \
+      --case_a_prob 1.0 --case_a_warmup_epochs 60 --case_a_anneal_epochs 40 --case_a_end_prob 0.05 \
+      --use_alignment --batch_size 8 --wandb_name "ki67_run12" --max_epochs 120 --he_rgb_dropout 0.1
+
+  Then same command with different --ckpt_dir and --wandb_name.
+####################################################################################################################
+
+  PYTHONPATH=. python scripts/train/train_mist.py \
+      --data_dir /home/ahmed_ayman/data/Destained_MIST \
+      --ckpt_dir "./checkpoints/ki67_run12" --stains Ki67 \
+      --deepliif_weights_path deepliif-weights/DeepLIIF_Latest_Model/latest_net_G1.pth \
+      --case_a_prob 1.0 --case_a_warmup_epochs 60 --case_a_anneal_epochs 40 --case_a_end_prob 0.05 \
+      --use_alignment --batch_size 8 --wandb_name "ki67_run12" --max_epochs 150 --he_rgb_dropout 0.1 \
+        --resume_from "./checkpoints/ki67_run12/last.ckpt"
+
+
+# hf upload asserelzeki/run12 "./checkpoints/ki67_run12/last.ckpt" run12_epoch81.ckpt
