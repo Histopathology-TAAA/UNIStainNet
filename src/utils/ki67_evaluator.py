@@ -104,7 +104,7 @@ class Ki67ClinicalEvaluator:
         H, W, _ = od.shape
         od_flat = od.reshape(-1, 3)
         concentrations = od_flat @ self._deconv_matrix
-        hema = concentrations[:, 0].reshape(H, W)            # Hematoxylin column
+        hema = concentrations[:, 0].reshape(H, W)
         return np.clip(hema, 0.0, None)
 
     # ------------------------------------------------------------------
@@ -142,8 +142,9 @@ class Ki67ClinicalEvaluator:
 
         img_np = np.clip(img_np, 0.0, 1.0).astype(np.float32)
 
-        # ── 2. DeepLIIF vs StarDist Evaluation Method ─────────────────
+        # ── 2. DeepLIIF Segmentation vs StarDist ──────────────────────
         if self.eval_method == 'deepliif' and self._deepliif_stainer is not None:
+            # Try to use DeepLIIF Segmentation
             try:
                 import torch
                 from deepliif.postprocessing import compute_final_results
@@ -153,19 +154,22 @@ class Ki67ClinicalEvaluator:
                 if torch.cuda.is_available():
                     img_tensor = img_tensor.cuda()
                 
+                # Extract all modalities
                 modalities = self._deepliif_stainer.extract_all_modalities(img_tensor)
                 seg_mask = modalities['Segmentation']
                 marker_mask = modalities['mpIHC_Ki67']
                 
+                # Convert back to numpy [0, 255]
                 seg_np = ((seg_mask.squeeze(0).permute(1, 2, 0).cpu().numpy() + 1.0) / 2.0 * 255).astype(np.uint8)
                 marker_np = ((marker_mask.squeeze(0).permute(1, 2, 0).cpu().numpy() + 1.0) / 2.0 * 255).astype(np.uint8)
                 img_np_255 = (img_np * 255).astype(np.uint8)
                 
+                # Use DeepLIIF's official post-processing
                 _, _, scoring = compute_final_results(
                     orig=img_np_255,
                     seg=seg_np,
                     marker=marker_np,
-                    resolution='40x',
+                    resolution='40x', # MIST dataset is 40x
                     size_thresh='default',
                     size_thresh_upper=None,
                     seg_thresh=self.seg_thresh,
@@ -181,32 +185,37 @@ class Ki67ClinicalEvaluator:
                 labeling_index = scoring['percent_pos']
                 return total_cells, positive_cells, labeling_index
                 
-            except RuntimeError as e:
-                print(f"[Ki67Evaluator] Falling back to StarDist: {e}")
-                pass
+            except Exception as e:
+                # DeepLIIF ensemble failed — permanently fall back to StarDist
+                print(f"\n[Ki67Evaluator] *** DeepLIIF FAILED — falling back to StarDist ***")
+                print(f"[Ki67Evaluator] Error: {type(e).__name__}: {e}")
+                self.eval_method = 'stardist'  # Permanently disable for remaining images
 
         # ── 3. StarDist Fallback (Grayscale Fluorescence Pipeline) ────
         star_model = self._load_star_model()
         
-        # We mathematically sum Hematoxylin + DAB to create a "Structural Density" map
+        # Extract individual stain densities
         dab_map = self._extract_dab_channel(img_np)
         hema_map = self._extract_hema_channel(img_np)
-        structural_density = dab_map + hema_map
         
-        # Normalize for fluorescence network
+        # Total structural density = Hematoxylin + DAB
+        # This converts a pale color image into a high-contrast grayscale image
+        # where ALL nuclei (blue and brown) are bright blobs on a dark background.
+        structural_density = hema_map + dab_map
+        
+        # Normalize for StarDist fluorescence model (expecting values roughly 0 to 1 with outliers)
         from csbdeep.utils import normalize
-        structural_density = normalize(structural_density, 1, 99.8, axis=(0,1))
+        img_norm = normalize(structural_density, 1, 99.8, axis=(0,1))
         
-        labels, _ = star_model.predict_instances(structural_density)
-
+        labels, _ = star_model.predict_instances(img_norm)
+        
         unique_ids = np.unique(labels)
-        unique_ids = unique_ids[unique_ids != 0]  # drop background
+        unique_ids = unique_ids[unique_ids != 0]
         total_cells = len(unique_ids)
 
         if total_cells == 0:
             return 0, 0, 0.0
 
-        # ── 4. Per-nucleus scoring ────────────────────────────────────
         positive_cells = 0
         for cell_id in unique_ids:
             mask = labels == cell_id
@@ -304,7 +313,73 @@ def compute_ki67_summary(real_li_scores, fake_li_scores):
     else:
         results['ki67_tier_kappa'] = float('nan')
 
-    # ── 4. Distributional summaries ───────────────────────────────────
+    # ── 4. ICC — Intraclass Correlation Coefficient ────────────────────
+    # ICC(2,1): two-way random, single rater — measures absolute agreement.
+    # Widely used in 2024-2025 Ki67 DIA papers as the primary metric.
+    if n >= 3:
+        try:
+            import pandas as pd
+            import pingouin as pg
+
+            df = pd.DataFrame({
+                'Subject': np.tile(np.arange(n), 2),
+                'Rater': ['Real'] * n + ['Fake'] * n,
+                'LI': np.concatenate([real, fake]),
+            })
+            icc_result = pg.intraclass_corr(
+                data=df, targets='Subject', raters='Rater', ratings='LI',
+            )
+            # Try ICC2 (single-rater two-way), fall back to any ICC2 variant
+            icc_row = icc_result[icc_result['Type'].str.contains('ICC2', na=False)]
+            if len(icc_row) == 0:
+                # Try case-insensitive
+                icc_row = icc_result[icc_result['Type'].str.lower().str.contains('icc2', na=False)]
+            if len(icc_row) == 0:
+                # Last resort: take the two-way single entry
+                icc_row = icc_result.head(1)
+            if len(icc_row) > 0:
+                results['ki67_icc'] = float(icc_row['ICC'].values[0])
+                try:
+                    ci = icc_row['CI95%'].values[0]
+                    if ci is not None and len(ci) == 2:
+                        results['ki67_icc_ci95_low'] = float(ci[0])
+                        results['ki67_icc_ci95_high'] = float(ci[1])
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"  [WARN] ICC computation failed: {e}")
+            results['ki67_icc'] = float('nan')
+
+    # ── 5. Multi-tier concordance (3-tier + 4-tier) ──────────────────
+    def _to_tier_3(li):
+        if li < 10.0:   return 0
+        elif li <= 20.0: return 1
+        else:            return 2
+
+    def _to_tier_4(li):
+        if li < 6.0:     return 0
+        elif li <= 20.0: return 1
+        elif li <= 50.0: return 2
+        else:            return 3
+
+    for name, fn in [('3tier', _to_tier_3), ('4tier', _to_tier_4)]:
+        rt = np.array([fn(x) for x in real])
+        ft = np.array([fn(x) for x in fake])
+        results[f'ki67_{name}_concordance'] = float(np.mean(rt == ft))
+        if len(np.unique(rt)) >= 2 or len(np.unique(ft)) >= 2:
+            try:
+                from sklearn.metrics import cohen_kappa_score
+                results[f'ki67_{name}_kappa'] = float(cohen_kappa_score(rt, ft, weights='linear'))
+            except Exception:
+                results[f'ki67_{name}_kappa'] = float('nan')
+        else:
+            results[f'ki67_{name}_kappa'] = float('nan')
+
+    # Backward compatibility aliases
+    results['ki67_tier_concordance'] = results['ki67_3tier_concordance']
+    results['ki67_tier_kappa'] = results['ki67_3tier_kappa']
+
+    # ── 6. Distributional summaries ───────────────────────────────────
     results['ki67_real_li_mean'] = float(np.mean(real))
     results['ki67_real_li_std'] = float(np.std(real))
     results['ki67_fake_li_mean'] = float(np.mean(fake))
@@ -314,9 +389,66 @@ def compute_ki67_summary(real_li_scores, fake_li_scores):
     return results
 
 
+def compute_hotspot_analysis(real_li_scores, fake_li_scores, n_patches_per_image=4):
+    """Per-image hotspot concordance analysis.
+
+    For each image, the LI was computed per 512×512 patch. If multiple patches
+    belong to the same WSI, identify the hotspot (highest-LI patch) per image
+    and compare hotspot metrics.
+
+    Args:
+        real_li_scores: [N] real LI percentages (per-patch)
+        fake_li_scores: [N] fake LI percentages (per-patch)
+        n_patches_per_image: number of patches per WSI (default 4 = 2×2 grid)
+
+    Returns:
+        dict with hotspot metrics, or empty dict if grouping not applicable
+    """
+    real = np.asarray(real_li_scores, dtype=np.float64)
+    fake = np.asarray(fake_li_scores, dtype=np.float64)
+    n = len(real)
+
+    if n % n_patches_per_image != 0 or n_patches_per_image <= 1:
+        return {}  # can't group into per-image hotspots
+
+    n_images = n // n_patches_per_image
+    real_2d = real.reshape(n_images, n_patches_per_image)
+    fake_2d = fake.reshape(n_images, n_patches_per_image)
+
+    # Hotspot = patch with highest LI per image
+    real_hotspots = real_2d.max(axis=1)
+    fake_hotspots = fake_2d.max(axis=1)
+
+    # Hotspot location: which patch index has the max?
+    real_hotspot_idx = real_2d.argmax(axis=1)
+    fake_hotspot_idx = fake_2d.argmax(axis=1)
+    location_match = float(np.mean(real_hotspot_idx == fake_hotspot_idx))
+
+    # Heterogeneity: hotspot / mean ratio
+    real_hetero = real_hotspots / (real_2d.mean(axis=1) + 1e-6)
+    fake_hetero = fake_hotspots / (fake_2d.mean(axis=1) + 1e-6)
+
+    # Hotspot metrics
+    from scipy.stats import pearsonr
+    r_hs, p_hs = pearsonr(real_hotspots, fake_hotspots)
+    mae_hs = float(np.mean(np.abs(real_hotspots - fake_hotspots)))
+
+    results = {
+        'ki67_hotspot_pearson_r': float(r_hs),
+        'ki67_hotspot_mae': mae_hs,
+        'ki67_hotspot_location_match': location_match,
+        'ki67_hotspot_real_mean': float(np.mean(real_hotspots)),
+        'ki67_hotspot_fake_mean': float(np.mean(fake_hotspots)),
+        'ki67_heterogeneity_mae': float(np.mean(np.abs(real_hetero - fake_hetero))),
+        'ki67_n_images_hotspot': int(n_images),
+    }
+    return results
+
+
 def print_ki67_summary(summary: dict, method: str = 'stardist'):
     """Pretty-print Ki67 clinical metrics to the terminal."""
     title = "DeepLIIF Gold Standard" if method == 'deepliif' else "StarDist Silver Standard"
+
     print("\n" + "=" * 60)
     print(f"  Ki67 CLINICAL EVALUATION  ({title})")
     print("=" * 60)
@@ -326,6 +458,17 @@ def print_ki67_summary(summary: dict, method: str = 'stardist'):
     print("-" * 60)
     print(f"  MAE (LI %)            : {summary['ki67_li_mae']:.2f} ± {summary['ki67_li_mae_std']:.2f}")
     print(f"  Pearson r             : {summary['ki67_li_pearson_r']:.4f}  (p={summary['ki67_li_pearson_p']:.2e})")
-    print(f"  Tier Concordance      : {summary['ki67_tier_concordance'] * 100:.1f}%")
-    print(f"  Weighted Kappa        : {summary['ki67_tier_kappa']:.4f}")
+    if 'ki67_icc' in summary and not np.isnan(summary['ki67_icc']):
+        print(f"  ICC(2,1)              : {summary['ki67_icc']:.4f}  (95% CI: {summary.get('ki67_icc_ci95_low', np.nan):.4f}–{summary.get('ki67_icc_ci95_high', np.nan):.4f})")
+    if 'ki67_3tier_concordance' in summary:
+        print(f"  Tier Concordance (3)  : {summary['ki67_3tier_concordance'] * 100:.1f}%")
+        print(f"  Weighted Kappa (3)    : {summary.get('ki67_3tier_kappa', summary.get('ki67_tier_kappa', float('nan'))):.4f}")
+    if 'ki67_4tier_concordance' in summary and not np.isnan(summary.get('ki67_4tier_concordance', float('nan'))):
+        print(f"  Tier Concordance (4)  : {summary['ki67_4tier_concordance'] * 100:.1f}%")
+        print(f"  Weighted Kappa (4)    : {summary.get('ki67_4tier_kappa', float('nan')):.4f}")
+    # Hotspot if available
+    if 'ki67_hotspot_pearson_r' in summary and not np.isnan(summary['ki67_hotspot_pearson_r']):
+        print(f"  Hotspot Pearson-r     : {summary['ki67_hotspot_pearson_r']:.4f}")
+        print(f"  Hotspot Location Match: {summary['ki67_hotspot_location_match'] * 100:.1f}%")
+        print(f"  Hotspot MAE (LI %)    : {summary['ki67_hotspot_mae']:.2f}")
     print("=" * 60 + "\n")
