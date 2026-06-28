@@ -296,15 +296,26 @@ def main():
         
     # Ki67 Clinical Evaluator (lazy — StarDist loads on first call)
     ki67_evaluator = None
+    ki67_evaluator_second = None
     if 'Ki67' in args.stains:
         ki67_evaluator = Ki67ClinicalEvaluator(
-            dab_threshold=args.dab_threshold, 
+            dab_threshold=args.dab_threshold,
             deepliif_stainer=deepliif_stainer,
             eval_method=args.ki67_eval_method,
             seg_thresh=args.seg_thresh,
             marker_thresh=args.marker_thresh
         )
         print(f"[INFO] Ki67 clinical evaluator enabled (Method={args.ki67_eval_method}, DAB thresh={args.dab_threshold})")
+
+        if args.ki67_eval_second_method != 'none':
+            ki67_evaluator_second = Ki67ClinicalEvaluator(
+                dab_threshold=args.dab_threshold,
+                deepliif_stainer=deepliif_stainer,
+                eval_method=args.ki67_eval_second_method,
+                seg_thresh=args.seg_thresh,
+                marker_thresh=args.marker_thresh
+            )
+            print(f"[INFO] Second evaluator: {args.ki67_eval_second_method} (for cross-method robustness)")
 
     # Per-stain evaluation
     for stain in args.stains:
@@ -459,6 +470,22 @@ def main():
             # Compute global summary
             ki67_summary = compute_ki67_summary(real_li_scores, fake_li_scores)
             print_ki67_summary(ki67_summary, method=args.ki67_eval_method)
+
+            # Second evaluator (cross-method robustness)
+            if ki67_evaluator_second is not None:
+                print(f"  Computing Ki67 clinical metrics (2nd: {args.ki67_eval_second_method})...")
+                real_li2, fake_li2 = [], []
+                for i in tqdm(range(N), desc="  Ki67 scoring (2nd)"):
+                    rc, rp, rli = ki67_evaluator_second.compute_labeling_index(real[i])
+                    if rc < args.min_nuclei:
+                        continue
+                    fc, fp, fli = ki67_evaluator_second.compute_labeling_index(gen[i])
+                    real_li2.append(rli)
+                    fake_li2.append(fli)
+                if len(real_li2) > 0:
+                    ki67_summary_2nd = compute_ki67_summary(real_li2, fake_li2)
+                    print_ki67_summary(ki67_summary_2nd, method=args.ki67_eval_second_method)
+                    stain_results['ki67_clinical_second'] = ki67_summary_2nd
 
             # Hotspot analysis (if patches can be grouped by WSI — requires
             # --hotspot_patches_per_image to be set on the CLI)

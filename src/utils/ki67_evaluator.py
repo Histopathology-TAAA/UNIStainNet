@@ -329,7 +329,14 @@ def compute_ki67_summary(real_li_scores, fake_li_scores):
             icc_result = pg.intraclass_corr(
                 data=df, targets='Subject', raters='Rater', ratings='LI',
             )
-            icc_row = icc_result[icc_result['Type'] == 'ICC2']
+            # Try ICC2 (single-rater two-way), fall back to any ICC2 variant
+            icc_row = icc_result[icc_result['Type'].str.contains('ICC2', na=False)]
+            if len(icc_row) == 0:
+                # Try case-insensitive
+                icc_row = icc_result[icc_result['Type'].str.lower().str.contains('icc2', na=False)]
+            if len(icc_row) == 0:
+                # Last resort: take the two-way single entry
+                icc_row = icc_result.head(1)
             if len(icc_row) > 0:
                 results['ki67_icc'] = float(icc_row['ICC'].values[0])
                 try:
@@ -339,9 +346,8 @@ def compute_ki67_summary(real_li_scores, fake_li_scores):
                         results['ki67_icc_ci95_high'] = float(ci[1])
                 except Exception:
                     pass
-            else:
-                results['ki67_icc'] = float('nan')
-        except Exception:
+        except Exception as e:
+            print(f"  [WARN] ICC computation failed: {e}")
             results['ki67_icc'] = float('nan')
 
     # ── 5. Multi-tier concordance (3-tier + 4-tier) ──────────────────
