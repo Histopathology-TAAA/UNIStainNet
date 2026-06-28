@@ -134,7 +134,7 @@ class UNIStainNetTrainer(pl.LightningModule):
         patchnce_n_patches=256,
         patchnce_temperature=0.07,
         uni_perceptual_weight=0.0,
-        use_se_attention=True,
+        use_se_attention=False,  # default off — only Run 12+ enables it
         # Ablation
         disable_uni=False,
         disable_class=False,
