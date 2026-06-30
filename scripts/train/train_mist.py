@@ -105,8 +105,8 @@ def main():
         lpips_256_weight=0.5,
         lpips_512_weight=0.25,
         he_edge_weight=2.0,
-        l1_lowres_weight=0.15,      # color anchor
-        gp_weight=1.0,              # 6-scale multi-resolution L1
+        l1_lowres_weight=0.5,       # clinical anchor (Run 8)
+        gp_weight=0.0,              # dropped — hurts clinical
         adversarial_weight=0.0,
         uncond_disc_weight=1.0,
         dab_intensity_weight=0.1,    # per-image expression anchor
