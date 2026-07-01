@@ -1194,6 +1194,80 @@ Run 11 = Run 10 Config + Two Fixes
       --case_a_prob 1.0 --case_a_warmup_epochs 60 --case_a_anneal_epochs 40 --case_a_end_prob 0.05 \
       --use_alignment --batch_size 8 --wandb_name "ki67_run12" --max_epochs 150 --he_rgb_dropout 0.1 \
         --resume_from "./checkpoints/ki67_run12/last.ckpt"
-
+  PYTHONPATH=. python scripts/eval/eval_mist.py \
+      --checkpoint "./checkpoints/ki67_run12/last.ckpt" \
+      --data_dir "/home/ahmed_ayman/data/Destained_MIST" \
+      --stains Ki67 \
+      --output_dir "./eval_output/ki67_run12" \
+      --enable_stn_alignment \
+      --ki67_eval_method deepliif \
+      --seg_thresh 80 \
+      --marker_thresh 80 \
+      --min_nuclei 80
 
 # hf upload asserelzeki/run12 "./checkpoints/ki67_run12/last.ckpt" run12_epoch81.ckpt
+hf upload asserelzeki/run12 "./checkpoints/ki67_run12/last.ckpt" run12_epoch128.ckpt
+
+
+PYTHONPATH=. python scripts/train/train_mist.py \
+      --data_dir /home/ahmed_ayman/data/Destained_MIST \
+      --ckpt_dir "./checkpoints/ki67_run13" --stains Ki67 \
+      --deepliif_weights_path deepliif-weights/DeepLIIF_Latest_Model/latest_net_G1.pth \
+      --case_a_prob 1.0 --case_a_warmup_epochs 60 --case_a_anneal_epochs 40 --case_a_end_prob 0.05 \
+      --use_alignment --batch_size 8 --wandb_name "ki67_run13" --max_epochs 150 --he_rgb_dropout 0.1
+PYTHONPATH=. python scripts/eval/eval_mist.py \
+      --checkpoint "./checkpoints/ki67_run13/last.ckpt" \
+      --data_dir "/home/ahmed_ayman/data/Destained_MIST" \
+      --stains Ki67 \
+      --output_dir "./eval_output/ki67_run13" \
+      --enable_stn_alignment \
+      --ki67_eval_method deepliif \
+      --seg_thresh 80 \
+      --marker_thresh 80 \
+      --min_nuclei 80
+
+
+PYTHONPATH=. python scripts/train/train_mist.py \
+      --data_dir /home/ahmed_ayman/data/Destained_MIST \
+      --ckpt_dir "./checkpoints/ki67_run14" --stains Ki67 \
+      --deepliif_weights_path deepliif-weights/DeepLIIF_Latest_Model/latest_net_G1.pth \
+      --case_a_prob 1.0 --case_a_warmup_epochs 60 --case_a_anneal_epochs 40 --case_a_end_prob 0.05 \
+      --use_alignment --batch_size 8 --wandb_name "ki67_run14" --max_epochs 150 --he_rgb_dropout 0.1 \
+      --resume_from "./checkpoints/ki67_run14/last.ckpt"
+PYTHONPATH=. python scripts/eval/eval_mist.py \
+      --checkpoint "./checkpoints/ki67_run14/last.ckpt" \
+      --data_dir "/home/ahmed_ayman/data/Destained_MIST" \
+      --stains Ki67 \
+      --output_dir "./eval_output/ki67_run14" \
+      --enable_stn_alignment \
+      --ki67_eval_method deepliif \
+      --seg_thresh 80 \
+      --marker_thresh 80 \
+      --min_nuclei 80
+
+PYTHONPATH=. python scripts/train/train_mist.py \
+      --data_dir /home/ahmed_ayman/data/Destained_MIST \
+      --ckpt_dir "./checkpoints/ki67_run15" --stains Ki67 \
+      --deepliif_weights_path deepliif-weights/DeepLIIF_Latest_Model/latest_net_G1.pth \
+      --case_a_prob 0.0 \
+      --use_alignment --batch_size 8 --wandb_name "ki67_run15" --max_epochs 150 --he_rgb_dropout 0.1 \
+      --resume_from "./checkpoints/ki67_run15/last.ckpt"
+PYTHONPATH=. python scripts/eval/eval_mist.py \
+      --checkpoint "./checkpoints/ki67_run15/last.ckpt" \
+      --data_dir "/home/ahmed_ayman/data/Destained_MIST" \
+      --stains Ki67 \
+      --output_dir "./eval_output/ki67_run15" \
+      --enable_stn_alignment \
+      --ki67_eval_method deepliif \
+      --seg_thresh 80 \
+      --marker_thresh 80 \
+      --min_nuclei 80
+
+
+PYTHONPATH=. python scripts/train/train_mist.py \
+      --data_dir /home/ahmed_ayman/data/Destained_MIST \
+      --ckpt_dir "./checkpoints/ki67_run16" --stains Ki67 \
+      --deepliif_weights_path deepliif-weights/DeepLIIF_Latest_Model/latest_net_G1.pth \
+      --case_a_prob 1.0 --case_a_warmup_epochs 60 --case_a_anneal_epochs 40 --case_a_end_prob 0 \
+      --use_alignment --batch_size 8 --wandb_name "ki67_run16" --max_epochs 150 --he_rgb_dropout 0 \
+      --resume_from "./checkpoints/ki67_run16/mist_epoch=099_step=107201.ckpt"
