@@ -110,8 +110,28 @@ class SelfAttention(nn.Module):
 
 
 # ======================================================================
-# Architectural Improvements (Run 11)
+# Architectural Improvements
 # ======================================================================
+
+class AdaptiveSkipGate(nn.Module):
+    """Decoder-gated skip connection (MAAM-style, MASC-Net 2025).
+
+    Query=decoder ("what do I need?"), Key/Value=encoder ("what do I have?").
+    Gates out H&E-specific noise while preserving tissue structure.
+    """
+
+    def __init__(self, enc_ch, dec_ch):
+        super().__init__()
+        hid = max(enc_ch // 8, 8)
+        self.query = nn.Conv2d(dec_ch, hid, 1)
+        self.key   = nn.Conv2d(enc_ch, hid, 1)
+        self.value = nn.Conv2d(enc_ch, enc_ch, 1)
+
+    def forward(self, enc_feat, dec_feat):
+        Q, K, V = self.query(dec_feat), self.key(enc_feat), self.value(enc_feat)
+        gate = torch.sigmoid((Q * K).mean(dim=1, keepdim=True))
+        return V * gate
+
 
 class SEBlock(nn.Module):
     """Squeeze-and-Excitation — learned per-channel importance gating.

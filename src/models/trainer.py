@@ -135,6 +135,7 @@ class UNIStainNetTrainer(pl.LightningModule):
         patchnce_temperature=0.07,
         uni_perceptual_weight=0.0,
         use_se_attention=False,  # default off — only Run 12+ enables it
+        use_adaptive_skip=False,  # Run 17+
         # Ablation
         disable_uni=False,
         disable_class=False,
@@ -208,6 +209,7 @@ class UNIStainNetTrainer(pl.LightningModule):
             learnable_sobel=learnable_sobel,
             hema_channels=hema_channels,
             use_se_attention=use_se_attention,
+            use_adaptive_skip=use_adaptive_skip,
         )
 
         # Discriminator (global multi-scale)

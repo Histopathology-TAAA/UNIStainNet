@@ -93,7 +93,7 @@ class AlignmentNetwork(nn.Module):
         mask = torch.sigmoid(out[:, 2:, :, :])
         return flow, mask
 
-from src.models.blocks import SPADEBlock, ResBlock, SelfAttention, SEBlock, CoordAttn
+from src.models.blocks import SPADEBlock, ResBlock, SelfAttention, SEBlock, CoordAttn, AdaptiveSkipGate
 from src.models.edge_encoder import EdgeEncoder, MultiScaleEdgeEncoder
 from src.models.uni_processor import UNIFeatureProcessor, UNIFeatureProcessorHighRes
 
@@ -118,7 +118,7 @@ class SPADEUNetGenerator(nn.Module):
                  input_skip=False, edge_encoder=False, edge_base_ch=32,
                  uni_spatial_size=4, image_size=512, uni_spade_at_512=False,
                  use_alignment=False, learnable_sobel=False, hema_channels=1,
-                 use_se_attention=True):
+                 use_se_attention=True, use_adaptive_skip=False):
         super().__init__()
         self.num_classes = num_classes
         self.class_dim = class_dim
@@ -241,6 +241,15 @@ class SPADEUNetGenerator(nn.Module):
         self.dec2_spade = SPADEBlock(64, uni_channels=64, class_dim=class_dim)
         self.dec2_act = nn.LeakyReLU(0.2, inplace=True)
         self.dec2_se = SEBlock(64) if use_se_attention else None
+
+        # Adaptive Skip Gates — decoder-gated encoder features (MASC-Net 2025)
+        if use_adaptive_skip:
+            self.skip_gate5 = AdaptiveSkipGate(512, 512)
+            self.skip_gate4 = AdaptiveSkipGate(256, 256)
+            self.skip_gate3 = AdaptiveSkipGate(128, 128)
+            self.skip_gate2 = AdaptiveSkipGate(64, 64)
+        else:
+            self.skip_gate5 = self.skip_gate4 = self.skip_gate3 = self.skip_gate2 = None
 
         if image_size == 1024:
             # D1 (new): upsample 256→512, skip from enc0 (32ch) + edge@512
@@ -403,7 +412,8 @@ class SPADEUNetGenerator(nn.Module):
 
         # D5: upsample 16→32, skip from e4 + edge@32, UNI at 32
         x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
-        skip5 = [x, e4] + ([edge_maps[32]] if edge_maps else [])
+        e4_skip = self.skip_gate5(e4, x) if self.skip_gate5 is not None else e4
+        skip5 = [x, e4_skip] + ([edge_maps[32]] if edge_maps else [])
         x = torch.cat(skip5, dim=1)
         x = self.dec5_conv(x)
         x = self.dec5_spade(x, uni_maps[32], class_emb)
@@ -413,7 +423,8 @@ class SPADEUNetGenerator(nn.Module):
 
         # D4: upsample 32→64, skip from e3 + edge@64, UNI at 64
         x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
-        skip4 = [x, e3] + ([edge_maps[64]] if edge_maps else [])
+        e3_skip = self.skip_gate4(e3, x) if self.skip_gate4 is not None else e3
+        skip4 = [x, e3_skip] + ([edge_maps[64]] if edge_maps else [])
         x = torch.cat(skip4, dim=1)
         x = self.dec4_conv(x)
         x = self.dec4_spade(x, uni_maps[64], class_emb)
@@ -423,7 +434,8 @@ class SPADEUNetGenerator(nn.Module):
 
         # D3: upsample 64→128, skip from e2 + edge@128, UNI at 128
         x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
-        skip3 = [x, e2] + ([edge_maps[128]] if edge_maps else [])
+        e2_skip = self.skip_gate3(e2, x) if self.skip_gate3 is not None else e2
+        skip3 = [x, e2_skip] + ([edge_maps[128]] if edge_maps else [])
         x = torch.cat(skip3, dim=1)
         x = self.dec3_conv(x)
         x = self.dec3_spade(x, uni_maps[128], class_emb)
@@ -433,7 +445,8 @@ class SPADEUNetGenerator(nn.Module):
 
         # D2: upsample 128→256, skip from e1 + edge@256, UNI at 256
         x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
-        skip2 = [x, e1] + ([edge_maps[256]] if edge_maps else [])
+        e1_skip = self.skip_gate2(e1, x) if self.skip_gate2 is not None else e1
+        skip2 = [x, e1_skip] + ([edge_maps[256]] if edge_maps else [])
         x = torch.cat(skip2, dim=1)
         x = self.dec2_conv(x)
         x = self.dec2_spade(x, uni_maps[256], class_emb)
