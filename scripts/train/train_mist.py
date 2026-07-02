@@ -62,6 +62,12 @@ def main():
     parser.add_argument('--he_rgb_dropout', type=float, default=0.0,
                         help='Probability of zeroing out RGB H&E channels during training '
                              '(forces model to rely on H-channel). Default: 0.0 (disabled)')
+    parser.add_argument('--use_se_attention', action='store_true',
+                        help='Enable SE-Net + Coordinate Attention modules.')
+    parser.add_argument('--use_adaptive_skip', action='store_true',
+                        help='Enable decoder-gated Adaptive Skip connections (MAAM-style).')
+    parser.add_argument('--use_sa_spade', action='store_true',
+                        help='Enable SA-SPADE (H-channel modulation in SPADE blocks).')
     parser.add_argument('--ihc_augmentation', type=float, default=0.0,
                         help='Probability of applying random blur/noise to IHC H-channel during Case A '
                              'to destroy DAB ghosts (range 0.0 to 1.0). Default: 0.0 (disabled)')
@@ -150,8 +156,9 @@ def main():
         # DeepLIIF virtual Hematoxylin staining
         deepliif_weights_path=args.deepliif_weights_path,
         hema_channels=args.hema_channels,
-        use_se_attention=True,       # Run 12: SE-Net + CoordAttn ON
-        use_adaptive_skip=True,       # Run 18: decoder-gated encoder features
+        use_se_attention=args.use_se_attention,
+        use_adaptive_skip=args.use_adaptive_skip,
+        # use_sa_spade=args.use_sa_spade,  # TODO: wire when SA-SPADE implemented
     )
 
     if args.deepliif_weights_path:

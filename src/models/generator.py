@@ -244,10 +244,10 @@ class SPADEUNetGenerator(nn.Module):
 
         # Adaptive Skip Gates — decoder-gated encoder features (MASC-Net 2025)
         if use_adaptive_skip:
-            self.skip_gate5 = AdaptiveSkipGate(512, 512)
-            self.skip_gate4 = AdaptiveSkipGate(256, 256)
-            self.skip_gate3 = AdaptiveSkipGate(128, 128)
-            self.skip_gate2 = AdaptiveSkipGate(64, 64)
+            self.skip_gate5 = AdaptiveSkipGate(512, 512)  # e4(512ch) ← x from bottleneck(512ch)
+            self.skip_gate4 = AdaptiveSkipGate(256, 512)  # e3(256ch) ← x from dec5(512ch)
+            self.skip_gate3 = AdaptiveSkipGate(128, 256)  # e2(128ch) ← x from dec4(256ch)
+            self.skip_gate2 = AdaptiveSkipGate(64, 128)   # e1(64ch)  ← x from dec3(128ch)
         else:
             self.skip_gate5 = self.skip_gate4 = self.skip_gate3 = self.skip_gate2 = None
 
