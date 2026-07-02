@@ -192,77 +192,48 @@ def main():
     metrics = ['SSIM (vs Real IHC)', 'HE-H-SSIM (vs H&E)', 'HE-NMI (vs H&E)']
     colors = ['#E74C3C', '#2980B9', '#27AE60']  # red, blue, green
 
+    # Use GridSpec: top row images, bottom 3 rows bar charts
+    from matplotlib.gridspec import GridSpec
     fig = plt.figure(figsize=(18, 10))
+    gs = GridSpec(4, n_variants, figure=fig, height_ratios=[1.5, 1, 1, 1])
 
-    # ── Top: Images ──────────────────────────────────────────────
-    n_variants = len(variant_names)
-    for i, name in enumerate(variant_names):
-        ax = fig.add_subplot(2, n_variants, i + 1)
-        img, desc = variants[name]
-        img_show = ((img + 1) / 2).clamp(0, 1).permute(1, 2, 0)
-        ax.imshow(img_show)
-        ax.set_title(name.replace(': ', ':\n'), fontsize=9, fontweight='bold')
-        ax.axis('off')
-        if i == 0:
-            ax.text(256, 540, 'Reference\n(Generated IHC)', ha='center', fontsize=8,
-                    bbox=dict(boxstyle='round,pad=0.3', facecolor='lightgreen', alpha=0.8))
-
-    # ── Bottom: Bar charts ──────────────────────────────────────
-    for j, metric in enumerate(metrics):
-        ax = fig.add_subplot(2, 1, 2)
-        # We need three subplots side by side, but subplot(2,1,2) is the bottom row
-        # Let me restructure to a 3×n grid
-        pass
-
-    # Better layout: images top row, 3 bar charts below
-    fig = plt.figure(figsize=(18, 12))
-
-    # Top row: images
-    for i, name in enumerate(variant_names):
-        ax = fig.add_subplot(3, n_variants, i + 1)
-        img, desc = variants[name]
-        img_show = ((img + 1) / 2).clamp(0, 1).permute(1, 2, 0)
-        ax.imshow(img_show)
-        short = name.split(':')[1].replace('\n', ' ')
-        ax.set_title(short, fontsize=8, fontweight='bold')
-        ax.axis('off')
-
-    # Bottom rows: one bar chart per metric
-    x = np.arange(n_variants)
-    width = 0.35
     short_names = [n.split(':')[1].split('\n')[0].strip() for n in variant_names]
 
+    # Row 0: images
+    for i, name in enumerate(variant_names):
+        ax = fig.add_subplot(gs[0, i])
+        img, desc = variants[name]
+        img_show = ((img + 1) / 2).clamp(0, 1).permute(1, 2, 0)
+        ax.imshow(img_show)
+        ax.set_title(short_names[i], fontsize=8, fontweight='bold')
+        ax.axis('off')
+
+    # Rows 1-3: bar charts
+    x = np.arange(n_variants)
+    width = 0.4
+
     for j, metric in enumerate(metrics):
-        ax = fig.add_subplot(3, 1, j + 2)
+        ax = fig.add_subplot(gs[j + 1, :])
         values = [results[n][metric] for n in variant_names]
         bars = ax.bar(x, values, width, color=colors[j], edgecolor='white', linewidth=0.8)
         ax.set_xticks(x)
         ax.set_xticklabels(short_names, fontsize=8)
         ax.set_ylabel(metric, fontsize=9, fontweight='bold')
-        ax.set_ylim(0, max(1.05, max(values) * 1.15))
+        ax.set_ylim(0, max(1.05, max(values) * 1.2))
 
-        # Annotate bars
         for bar, val in zip(bars, values):
-            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.02,
+            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.01,
                     f'{val:.3f}', ha='center', fontsize=8, fontweight='bold')
 
-        # Highlight A (original) and mark D (noise) as baseline
-        bars[0].set_alpha(1.0)
-        bars[3].set_alpha(0.5)
+        bars[0].set_alpha(1.0); bars[3].set_alpha(0.5)
 
-        # Add interpretation
-        if metric == 'SSIM (vs Real IHC)':
-            ax.text(2.5, ax.get_ylim()[1] * 0.85,
-                    '⚠ SSIM: Drops on shift/noise, stays misleadingly high on blur',
-                    ha='center', fontsize=8, color=colors[j], style='italic')
-        elif metric == 'HE-H-SSIM (vs H&E)':
-            ax.text(2.5, ax.get_ylim()[1] * 0.85,
-                    '✅ HE-H-SSIM: Stable under shift/noise, drops on blur (no structure)',
-                    ha='center', fontsize=8, color=colors[j], style='italic')
-        else:
-            ax.text(2.5, ax.get_ylim()[1] * 0.85,
-                    '✅ HE-NMI: Robust to shift/noise, drops on blur — measures information',
-                    ha='center', fontsize=8, color=colors[j], style='italic')
+        notes = {
+            'SSIM (vs Real IHC)': '⚠ SSIM: Collapses on shift/noise, stays high on blur (misleading)',
+            'HE-H-SSIM (vs H&E)': '✅ HE-H-SSIM: Stable under shift/noise, drops correctly on blur',
+            'HE-NMI (vs H&E)': '✅ HE-NMI: Robust to all perturbations except structure destruction',
+        }
+        ax.text(2.5, ax.get_ylim()[1] * 0.80, notes[metric], ha='center', fontsize=9,
+                color=colors[j], style='italic', fontweight='bold')
 
     fig.suptitle('Metric Stability Under Controlled Perturbations\n'
                  'HE-H-SSIM and HE-NMI are robust to misalignment and noise; SSIM is not',
