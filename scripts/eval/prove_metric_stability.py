@@ -194,6 +194,7 @@ def main():
 
     # Use GridSpec: top row images, bottom 3 rows bar charts
     from matplotlib.gridspec import GridSpec
+    n_variants = len(variant_names)
     fig = plt.figure(figsize=(18, 10))
     gs = GridSpec(4, n_variants, figure=fig, height_ratios=[1.5, 1, 1, 1])
 
