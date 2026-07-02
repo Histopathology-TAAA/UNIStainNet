@@ -113,7 +113,8 @@ def create_variants(img):
     variants['D: Random Noise\n(No structure)'] = (random_img, 'Zero structure baseline')
 
     # E: Gaussian blur (destroys fine edges)
-    blurred = F.gaussian_blur(img.unsqueeze(0), kernel_size=15, sigma=5.0).squeeze(0)
+    import torchvision.transforms.functional as TF
+    blurred = TF.gaussian_blur(img.unsqueeze(0), kernel_size=15, sigma=5.0).squeeze(0)
     blurred = blurred.clamp(-1, 1)
     variants['E: Blurred σ=5\n(Soft structures)'] = (blurred, 'Soft edges, same layout')
 
