@@ -1263,11 +1263,103 @@ PYTHONPATH=. python scripts/eval/eval_mist.py \
       --marker_thresh 80 \
       --min_nuclei 80
 
-
+#part 1
 PYTHONPATH=. python scripts/train/train_mist.py \
       --data_dir /home/ahmed_ayman/data/Destained_MIST \
       --ckpt_dir "./checkpoints/ki67_run16" --stains Ki67 \
       --deepliif_weights_path deepliif-weights/DeepLIIF_Latest_Model/latest_net_G1.pth \
       --case_a_prob 1.0 --case_a_warmup_epochs 60 --case_a_anneal_epochs 40 --case_a_end_prob 0 \
       --use_alignment --batch_size 8 --wandb_name "ki67_run16" --max_epochs 150 --he_rgb_dropout 0 \
-      --resume_from "./checkpoints/ki67_run16/mist_epoch=099_step=107201.ckpt"
+      --resume_from "./checkpoints/ki67_run16/last.ckpt"
+#part 2
+# PYTHONPATH=. python scripts/train/train_mist.py \
+#     --data_dir /home/ahmed_ayman/data/Destained_MIST \
+#     --ckpt_dir "./checkpoints/ki67_run16" --stains Ki67 \
+#     --deepliif_weights_path deepliif-weights/DeepLIIF_Latest_Model/latest_net_G1.pth \
+#     --case_a_prob 1.0 --case_a_warmup_epochs 60 --case_a_anneal_epochs 40 --case_a_end_prob 0.0 \
+#     --use_alignment --batch_size 8 --wandb_name "ki67_run16" --max_epochs 150 --he_rgb_dropout 0.1 \
+#     --resume_from "./checkpoints/ki67_run16/last.ckpt"
+
+PYTHONPATH=. python scripts/eval/eval_mist.py \
+      --checkpoint "./checkpoints/ki67_run16/run16-v1.ckpt" \
+      --data_dir "/home/ahmed_ayman/data/Destained_MIST" \
+      --stains Ki67 \
+      --output_dir "./eval_output/ki67_run16" \
+      --enable_stn_alignment \
+      --ki67_eval_method deepliif \
+      --seg_thresh 80 \
+      --marker_thresh 80 \
+      --min_nuclei 80
+
+
+  ┌────────────────────┬───────┬──────────────────────────────────────┐
+  │       Weight       │ Value │              Proven By               │
+  ├────────────────────┼───────┼──────────────────────────────────────┤
+  │ l1_lowres          │ 1.0   │ Run 16: DAB r 0.931 record           │
+  ├────────────────────┼───────┼──────────────────────────────────────┤
+  │ he_edge            │ 2.0   │ Run 8: HE-H-SSIM 0.732               │
+  ├────────────────────┼───────┼──────────────────────────────────────┤
+  │ lpips_512          │ 0.25  │ Run 8                                │
+  ├────────────────────┼───────┼──────────────────────────────────────┤
+  │ mlpa               │ 0.5   │ PV series: DAB KL improvement        │
+  ├────────────────────┼───────┼──────────────────────────────────────┤
+  │ patchnce           │ 0.1   │ Run 10: HE-NMI gain                  │
+  ├────────────────────┼───────┼──────────────────────────────────────┤
+  │ dab_intensity      │ 0.1   │ Run 13: ICC 0.868                    │
+  ├────────────────────┼───────┼──────────────────────────────────────┤
+  │ he_rgb_dropout     │ 0.1   │ Run 8                                │
+  ├────────────────────┼───────┼──────────────────────────────────────┤
+  │ case_a_end_prob    │ 0.05  │ Run 16 proved anchor essential       │
+  ├────────────────────┼───────┼──────────────────────────────────────┤
+  │ SE-Net + CoordAttn │ ✅    │ Run 12: HE-NMI 0.199                 │
+  ├────────────────────┼───────┼──────────────────────────────────────┤
+  │ Adaptive Skip      │ ✅    │ New — decoder-gated encoder features │
+  └────────────────────┴───────┴──────────────────────────────────────┘
+
+  PYTHONPATH=. python scripts/train/train_mist.py \
+      --data_dir /home/ahmed_ayman/data/Destained_MIST \
+      --ckpt_dir "./checkpoints/ki67_run17" --stains Ki67 \
+      --deepliif_weights_path deepliif-weights/DeepLIIF_Latest_Model/latest_net_G1.pth \
+      --case_a_prob 1.0 --case_a_warmup_epochs 60 --case_a_anneal_epochs 40 --case_a_end_prob 0.05 \
+      --use_alignment --use_se_attention --use_adaptive_skip \
+      --batch_size 8 --wandb_name "ki67_run17" --max_epochs 150 --he_rgb_dropout 0.1
+
+  
+    PYTHONPATH=. python scripts/eval/eval_mist.py \
+      --checkpoint "./checkpoints/ki67_run17/last.ckpt" \
+      --data_dir "/home/ahmed_ayman/data/Destained_MIST" \
+      --stains Ki67 \
+      --output_dir "./eval_output/ki67_run17" \
+      --enable_stn_alignment \
+      --ki67_eval_method deepliif \
+      --seg_thresh 80 \
+      --marker_thresh 80 \
+      --min_nuclei 80
+
+# Prove metric stability
+PYTHONPATH=. python scripts/eval/prove_metric_stability.py \
+      --checkpoint ./checkpoints/ki67_deepliif_run8/last.ckpt \
+      --data_dir /home/ahmed_ayman/data/Destained_MIST --stains Ki67 \
+      --output figures/metric_stability.png
+
+
+########################################################################################################
+  PYTHONPATH=. python scripts/train/train_mist.py \
+      --data_dir /home/ahmed_ayman/data/Destained_MIST \
+      --ckpt_dir "./checkpoints/multi_curriculum" \
+      --stains Ki67 ER PR \
+      --deepliif_weights_path deepliif-weights/DeepLIIF_Latest_Model/latest_net_G1.pth \
+      --case_a_prob 1.0 --case_a_warmup_epochs 60 --case_a_anneal_epochs 40 --case_a_end_prob 0.05 \
+      --use_alignment --use_se_attention \
+      --batch_size 16 --wandb_name "multi_curriculum" --max_epochs 150 --he_rgb_dropout 0.1
+      
+    PYTHONPATH=. python scripts/eval/eval_mist.py \
+      --checkpoint "./checkpoints/multi_curriculum/last.ckpt" \
+      --data_dir "/home/ahmed_ayman/data/Destained_MIST" \
+      --stains Ki67 ER PR \
+      --output_dir "./eval_output/multi_curriculum" \
+      --enable_stn_alignment \
+      --ki67_eval_method deepliif \
+      --seg_thresh 80 \
+      --marker_thresh 80 \
+      --min_nuclei 80
